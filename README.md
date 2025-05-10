@@ -39,3 +39,13 @@ Quant, Discord sunucularınız için çok yönlü bir bottur. Müzik çalma, mod
 ### 1. Gerekli Bağımlılıkları Yükleyin
 ```bash
 pip install -r requirements.txt
+```
+### Çevresel Değişkenleri Ayarlayın
+1-Koddaki 'your' ile başlayan kısımları kendi bilgilerinizle doldurun(eğer spotify idniz yoksa spotify botu oluşturmanız gerekecektir)
+2-FFmpeg modülünü indirip bilgisayarınızın Çevre Değişkenleri kısmındaki path yerine indirdiğiniz ffmpeg dosyasının yolunu kaydetmeniz lazım
+
+### Botu Çalıştırn
+```bash
+python Quant_git.py
+```
+ile botunuzu çalıstırın ve eğlenceye doyun...
