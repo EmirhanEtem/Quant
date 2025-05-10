@@ -1,0 +1,8 @@
+discord.py
+discord-ext-commands
+requests
+google-generativeai
+yt-dlp
+beautifulsoup4
+spotipy
+pyfiglet
