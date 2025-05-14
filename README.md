@@ -24,6 +24,7 @@ Quant is a versatile bot for your Discord servers. It offers music playback, mod
 - **`!quant <question>`**: Chat with AI.
 - **`!image <prompt>`**: Generates an image based on your prompt.
 - **`!steam <game_name>`**: Shows the Steam price of the game.
+- - **`!translate <sentence> <language>`**: Translates your sentence ,**`!diller`**: Orders all suppurted languages.
 
 ### 🛠️ Moderation (Only 'Moderator' Role)
 - **`!announcement`**: Creates an announcement step by step.
