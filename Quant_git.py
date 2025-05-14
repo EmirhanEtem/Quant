@@ -1,4 +1,5 @@
 import discord
+from discord import File
 from discord.ext import commands, tasks
 import requests
 from io import BytesIO
@@ -15,7 +16,9 @@ import spotipy
 import json
 import os
 import pyfiglet # For the help command
-
+from googletrans import Translator, LANGUAGES # For !translate command
+import inspect
+# You might need to install googletrans: pip install googletrans==4.0.0-rc1 
 # --- Configuration ---
 # Load sensitive data from environment variables if possible
 SPOTIPY_CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID", "your_spotify_client_id_here")
@@ -24,11 +27,11 @@ SPOTIPY_CLIENT_SECRET = os.getenv("SPOTIPY_CLIENT_SECRET", "your_spotify_client_
 SPOTIPY_REDIRECT_URI = os.getenv("SPOTIPY_REDIRECT_URI", "your_redirect_uri_here") # e.g., http://localhost:8888/callback
 
 HF_TOKEN = os.getenv('HF_TOKEN', 'your_huggingface_token_here')
-GENAI_API_KEY = os.getenv('GENAI_API_KEY', 'your_google_ai_api_key_here')
+GENAI_API_KEY = os.getenv('GENAI_API_KEY', 'YOUR_GOOGLE_AI_API_KEY_HERE') # Replace with your actual API key
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "your_discord_bot_token_here")
 
-LOG_CHANNEL_ID = "your_log_channel_id" # Ensure this channel exists e.g., 123456789012345678 but not as a string
-
+LOG_CHANNEL_ID = 1287013533132914809 # Ensure this channel exists
+BOT_CHANNEL_ID = 1180979476117606481
 # --- Spotify OAuth Setup ---
 sp_oauth = SpotifyOAuth(
     client_id=SPOTIPY_CLIENT_ID,
@@ -274,7 +277,95 @@ async def sil(ctx, number: int):
     except discord.HTTPException as e:
         await ctx.send(f"Mesajlar silinirken bir hata oluştu: {e}")
 
+@bot.command(name='translate', aliases=['çeviri'])
+async def translate_command(ctx, *, query: str):
+    try:
+        parts = query.split()
+        if len(parts) < 2:
+            await ctx.send("Kullanım: `!translate <çevirilecek metin> <hedef dil kodu>` (örn: `!translate hello world tr` veya `!translate merhaba dünya english`)")
+            return
 
+        target_language_input = parts[-1].lower()
+        text_to_translate = " ".join(parts[:-1])
+
+        if not text_to_translate:
+            await ctx.send("Lütfen çevirmek için bir metin girin.")
+            return
+
+        actual_target_language_code = None
+        if target_language_input in LANGUAGES: 
+            actual_target_language_code = target_language_input
+        else: 
+            for code, name in LANGUAGES.items():
+                if target_language_input == name.lower():
+                    actual_target_language_code = code
+                    break
+        
+        if not actual_target_language_code:
+            await ctx.send(f"Geçersiz hedef dil: '{parts[-1]}'. Lütfen geçerli bir dil kodu (örn: en, tr) veya tam dil adı (örn: english, turkish) girin. Tam liste için `!diller` komutunu kullanabilirsiniz.")
+            return
+
+        translator = Translator()
+        
+        translation_result = await bot.loop.run_in_executor(
+            None, translator.translate, text_to_translate, actual_target_language_code
+        )
+
+        final_translation = None
+        if inspect.isawaitable(translation_result):
+            print(f"DEBUG: translate_command received an awaitable from run_in_executor: {translation_result}. Awaiting it now.")
+            final_translation = await translation_result
+        else:
+            final_translation = translation_result
+        
+        if final_translation is None or not hasattr(final_translation, 'src') or not hasattr(final_translation, 'text'):
+            await ctx.send("Çeviri sonucu alınamadı veya beklenmedik bir formatta geldi.")
+            print(f"DEBUG: Final translation object was None or malformed: {final_translation}")
+            return
+
+        source_lang_name = LANGUAGES.get(final_translation.src.lower(), final_translation.src.upper())
+        target_lang_name = LANGUAGES.get(actual_target_language_code.lower(), actual_target_language_code.upper())
+
+        embed = discord.Embed(title="Çeviri Sonucu", color=discord.Color.green())
+        embed.add_field(name=f"Kaynak Metin ({source_lang_name})", value=f"```{text_to_translate}```", inline=False)
+        embed.add_field(name=f"Çevrilen Metin ({target_lang_name})", value=f"```{final_translation.text}```", inline=False)
+        embed.set_footer(text=f"Çeviren: Google Translate | İsteyen: {ctx.author.display_name}")
+        embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
+        await ctx.send(embed=embed)
+
+    except Exception as e:
+        await ctx.send(f"Çeviri sırasında bir hata oluştu: {str(e)}")
+        print(f"Translate command error: {e} ({type(e)})")
+        import traceback
+        traceback.print_exc()
+
+@bot.command(name="diller", aliases=["languages"])
+async def list_languages(ctx):
+    lang_list = [f"`{code}`: {name.capitalize()}" for code, name in LANGUAGES.items()]
+    
+    output = "Kullanılabilir Diller (Kod: Adı):\n"
+    current_message = output
+    messages_to_send = []
+
+    for lang_entry in lang_list:
+        if len(current_message) + len(lang_entry) + 2 > 1990: 
+            messages_to_send.append(current_message)
+            current_message = "" # Start new message part with "" not with "output"
+        current_message += lang_entry + "\n"
+    
+    if current_message and current_message != output : # Add the last part if it has content beyond the header
+        messages_to_send.append(current_message)
+    elif not messages_to_send and current_message == output: # if only header was prepared
+         messages_to_send.append(output + "Liste boş veya alınamadı.")
+
+
+    if not messages_to_send: # Should not happen if LANGUAGES is populated
+        await ctx.send("Dil listesi alınamadı.")
+        return
+
+    for msg_part in messages_to_send:
+        await ctx.send(msg_part)
+    await ctx.send("Çeviri için dil kodunu (örn: `en`) veya tam adını İngilizce küçük harf (örn: `english`) kullanabilirsiniz.")
 # --- Spotify Authentication Commands ---
 @bot.command(name='spotify_login')
 async def spotify_login(ctx):
@@ -401,7 +492,7 @@ async def play_audio(ctx, query_or_url: str, display_name: str, sp_instance=None
             if hasattr(current_ctx, 'from_spotify_playlist'): # Clear flag if playlist ended
                 delattr(current_ctx, 'from_spotify_playlist')
             if vc_client and vc_client.is_connected():
-                 bot.loop.create_task(current_ctx.send("🎶 Müzik kuyruğu tamamlandı."))
+                 bot.loop.create_task(current_ctx.send("🎶 Müzik kuyruğu tamamlandı.",delete_after=10))
                  bot.vc_idle_timer = asyncio.get_event_loop().time() # Start idle timer
 
         if next_song_coro:
@@ -414,7 +505,8 @@ async def play_audio(ctx, query_or_url: str, display_name: str, sp_instance=None
 
     try:
         voice_client.play(discord.FFmpegPCMAudio(audio_url, **ffmpeg_options), after=lambda e: after_playing_callback(e, ctx, voice_client))
-        await ctx.send(f'🎶 Şimdi çalıyor: **{title}**')
+        log_channel = bot.get_channel(BOT_CHANNEL_ID)
+        await log_channel.send(f'🎶 Şimdi çalıyor: **{title}**')
         bot.vc_idle_timer = float('inf') # Mark as active, disable idle timer
     except Exception as e:
         await ctx.send(f"Müzik çalınırken hata: {e}")
@@ -422,7 +514,9 @@ async def play_audio(ctx, query_or_url: str, display_name: str, sp_instance=None
 
 
 @bot.command(name='play')
+
 async def play(ctx, *, query: str):
+    log_channel = bot.get_channel(BOT_CHANNEL_ID)
     if not ctx.author.voice:
         await ctx.send("**Bir ses kanalında olmalısınız.**")
         return
@@ -431,9 +525,10 @@ async def play(ctx, *, query: str):
     if hasattr(ctx, 'from_spotify_playlist'):
         delattr(ctx, 'from_spotify_playlist')
 
+
     if ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused() or bot.sarki_kuyrugu):
         bot.sarki_kuyrugu.append((ctx, query, None)) # Add to generic queue (ctx, query, no_sp_instance)
-        await ctx.send(f'🎵 Kuyruğa eklendi: **{query}**')
+        await log_channel.send(f'🎵 Kuyruğa eklendi: **{query}**')
     else:
         await play_audio(ctx, query, query) # query is also display_name here
 
@@ -759,14 +854,14 @@ async def on_message(message):
     # For local files, consider uploading them somewhere or packaging with bot.
     content_lower = message.content.lower()
     if "lol" in content_lower:
-        # vd = "C:\\Users\\Emirhan\\Desktop\\DcBOTSON\\Resources\\aph.mp4" # Local path
-        await message.channel.send("😂 Aphelios Main Misin?", delete_after=20)
+        vd = "C:\\Users\\Emirhan\\Desktop\\DcBOTSON\\Resources\\aph.mp4" # Local path
+        await message.channel.send(file=File(vd), delete_after=20)
     if "seksi" in content_lower:
-        # vd = "C:\\Users\\Emirhan\\Desktop\\DcBOTSON\\Resources\\202503051623 (3).mp4"
-        await message.channel.send("😏", delete_after=20)
+        vd = "C:\\Users\\Emirhan\\Desktop\\DcBOTSON\\Resources\\202503051623 (3).mp4"
+        await message.channel.send(file=File(vd), delete_after=20)
     if "azgın furkan" in content_lower:
-        # vd = "C:\\Users\\Emirhan\\Desktop\\DcBOTSON\\Resources\\Isimsiz_video_Clipchamp_ile_yapld_3.mp4"
-        await message.channel.send("👀 Furkan yine formunda!", delete_after=20)
+        vd = "C:\\Users\\Emirhan\\Desktop\\DcBOTSON\\Resources\\Isimsiz_video_Clipchamp_ile_yapld_3.mp4"
+        await message.channel.send(file=File(vd), delete_after=20)
     # ... (other similar conditions from original code) ...
     if "sa" == content_lower:
         await message.channel.send("**Aleyküm Selam** 👋", delete_after=20)
@@ -839,7 +934,9 @@ async def yardim_command(ctx):
     embed.add_field(name="✨ AI & Eğlence", value=
         "`!quant <soru>` - Yapay zeka ile sohbet et.\n"
         "`!resim <prompt>` - Yazdığınız propmt'a göre resim oluşturur.\n"
-        "`!steam <oyun_adı>` - Oyunun Steam fiyatını gösterir.", inline=False)
+        "`!steam <oyun_adı>` - Oyunun Steam fiyatını gösterir.\n"
+        "`!translate <metin> <hedef_dil_kodu>` - Metni belirtilen dile çevirir (örn: `!translate merhaba en`).\n"
+        "  Diğer adıyla `!çevir`. Kullanılabilir diller için `!diller`.", inline=False)
 
     embed.add_field(name="🎵 Müzik", value=
         "`!play <şarkı_adı/URL>` - Şarkı çalar veya kuyruğa ekler.\n"
