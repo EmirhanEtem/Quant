@@ -845,42 +845,7 @@ async def give_moderator_role_special(ctx, member: discord.Member):
         await ctx.message.delete()
 
 
-@bot.event
-async def on_message(message):
-    if message.author == bot.user:
-        return
 
-    # Original on_message specific keyword responses (converted to placeholders)
-    # For local files, consider uploading them somewhere or packaging with bot.
-    content_lower = message.content.lower()
-    if "lol" in content_lower:
-        vd = "C:\\Users\\Emirhan\\Desktop\\DcBOTSON\\Resources\\aph.mp4" # Local path
-        await message.channel.send(file=File(vd), delete_after=20)
-    if "seksi" in content_lower:
-        vd = "C:\\Users\\Emirhan\\Desktop\\DcBOTSON\\Resources\\202503051623 (3).mp4"
-        await message.channel.send(file=File(vd), delete_after=20)
-    if "azgın furkan" in content_lower:
-        vd = "C:\\Users\\Emirhan\\Desktop\\DcBOTSON\\Resources\\Isimsiz_video_Clipchamp_ile_yapld_3.mp4"
-        await message.channel.send(file=File(vd), delete_after=20)
-    # ... (other similar conditions from original code) ...
-    if "sa" == content_lower:
-        await message.channel.send("**Aleyküm Selam** 👋", delete_after=20)
-
-    # The 'dd' and 'bb' role manipulation logic from original:
-    # This is a bit unusual and potentially risky if 'dd'/'bb' are common words.
-    # Consider making these actual commands or more specific triggers.
-    # Example: if message.content.startswith("!givedemomod"): ...
-    # For now, keeping the logic structure but be aware.
-    # mod_role = discord.utils.get(message.guild.roles, name='Moderator')
-    # if mod_role:
-    #     if "asdasdasd" in content_lower: # 'dd' placeholder
-    #         # ... (original logic for adding role temporarily) ...
-    #         pass
-    #     if "dsadsadsa" in content_lower: # 'bb' placeholder
-    #         # ... (original logic for removing role) ...
-    #         pass
-
-    await bot.process_commands(message) # IMPORTANT: This allows other commands to run
 
 
 # --- VC Idle Check Task ---
