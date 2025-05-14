@@ -23,6 +23,7 @@ Quant, Discord sunucularınız için çok yönlü bir bottur. Müzik çalma, mod
 - **`!quant <soru>`**: Yapay zeka ile sohbet et.
 - **`!resim <prompt>`**: Yazdığınız prompt'a göre resim oluşturur.
 - **`!steam <oyun_adı>`**: Oyunun Steam fiyatını gösterir.
+- - **`!çeviri <cümle / kelime> <çevirilecek dil>`**: Girdiğiniz cümleyi istediğiniz dile çevirir ,**`!diller`**: Desteklenen dilleri sıralar.
 
 ### 🛠️ Moderasyon (Sadece 'Moderator' Rolü)
 - **`!duyuru`**: Adım adım duyuru oluşturur.
