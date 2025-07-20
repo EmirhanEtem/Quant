@@ -2,7 +2,7 @@
 
 Quant Bot is a feature-rich, modular bot developed for Discord servers. It aims to make your server more interactive and manageable with features like moderation, music (YouTube & Spotify), AI integrations (text and image generation), a leveling/economy system, and various fun commands.
 
-![Discord](https://img.shields.io/discord/123456789012345678?label=Discord&logo=discord&style=for-the-badge)
+![Discord](https://img.shields.io/discord/1279064789116653643?label=Discord&logo=discord&style=for-the-badge)
 
 ## ✨ Key Features
 
