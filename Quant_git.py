@@ -1,951 +1,1094 @@
 import discord
-from discord import File
+from discord import app_commands, File, ui, ButtonStyle
 from discord.ext import commands, tasks
 import requests
 from io import BytesIO
-import google.generativeai as genai_google # Using google-generativeai
+import google.generativeai as genai_google
 import datetime
 import random
 import yt_dlp
 import asyncio
 from bs4 import BeautifulSoup
 import time
-from urllib.parse import urlparse, parse_qs, quote as url_quote # For URL encoding
+from urllib.parse import urlparse, parse_qs, quote as url_quote
 from spotipy.oauth2 import SpotifyOAuth
 import spotipy
 import json
 import os
-import pyfiglet # For the help command
-from googletrans import Translator, LANGUAGES # For !translate command
+import pyfiglet
+from googletrans import Translator, LANGUAGES
 import inspect
-# You might need to install googletrans: pip install googletrans==4.0.0-rc1 
-# --- Configuration ---
-# Load sensitive data from environment variables if possible
-SPOTIPY_CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID", "your_spotify_client_id_here")
-SPOTIPY_CLIENT_SECRET = os.getenv("SPOTIPY_CLIENT_SECRET", "your_spotify_client_secret_here")
-# IMPORTANT: This redirect URI must be active and registered in your Spotify App settings
-SPOTIPY_REDIRECT_URI = os.getenv("SPOTIPY_REDIRECT_URI", "your_redirect_uri_here") # e.g., http://localhost:8888/callback
+import re
 
-HF_TOKEN = os.getenv('HF_TOKEN', 'your_huggingface_token_here')
-GENAI_API_KEY = os.getenv('GENAI_API_KEY', 'YOUR_GOOGLE_AI_API_KEY_HERE') # Replace with your actual API key
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "your_discord_bot_token_here")
-
-LOG_CHANNEL_ID = 1287013533132914809 # Ensure this channel exists
-BOT_CHANNEL_ID = 1180979476117606481
-# --- Spotify OAuth Setup ---
-sp_oauth = SpotifyOAuth(
-    client_id=SPOTIPY_CLIENT_ID,
-    client_secret=SPOTIPY_CLIENT_SECRET,
-    redirect_uri=SPOTIPY_REDIRECT_URI,
-    scope=["user-library-read", "playlist-read-private", "playlist-modify-public"],
-    # cache_path=None # Explicitly disable Spotipy's default file caching
-)
+SPOTIPY_CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID", "SPOTIPY_CLIENT_ID_HERE")
+SPOTIPY_CLIENT_SECRET = os.getenv("SPOTIPY_CLIENT_SECRET", "SPOTIPY_CLIENT_SECRET_HERE")
+SPOTIPY_REDIRECT_URI = os.getenv("SPOTIPY_REDIRECT_URI", "http://localhost:8888/callback") 
+HF_TOKEN = os.getenv('HF_TOKEN', 'hf_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX')
+GENAI_API_KEY = os.getenv('GENAI_API_KEY', 'GENAI_API_KEY_HERE')
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "YOUR_DISCORD_BOT_TOKEN_HERE")
+LOG_CHANNEL_ID = "YOUR_LOG_CHANNEL_ID_HERE"  
 
 TOKEN_STORAGE_FILE = "user_spotify_tokens.json"
+LEVELS_FILE = "levels.json"
+ECONOMY_FILE = "economy.json"
+SETTINGS_FILE = "server_settings.json"
+WARNINGS_FILE = "warnings.json"
 
-def load_spotify_tokens():
+def load_json(filename):
+    """Bir JSON dosyasını güvenli bir şekilde yükler."""
     try:
-        if os.path.exists(TOKEN_STORAGE_FILE):
-            with open(TOKEN_STORAGE_FILE, 'r') as f:
-                return {int(k): v for k, v in json.load(f).items()}
+        if os.path.exists(filename):
+            with open(filename, 'r', encoding='utf-8') as f:
+                return json.load(f)
         return {}
-    except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
-        print(f"Warning: Could not load/parse {TOKEN_STORAGE_FILE} ({e}). Starting with empty Spotify tokens.")
+    except (json.JSONDecodeError, FileNotFoundError):
         return {}
 
-def save_spotify_tokens(tokens):
+def save_json(filename, data):
+    """Bir Python sözlüğünü JSON dosyasına güvenli bir şekilde kaydeder."""
     try:
-        with open(TOKEN_STORAGE_FILE, 'w') as f:
-            json.dump(tokens, f, indent=4)
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4)
     except Exception as e:
-        print(f"Error saving Spotify tokens: {e}")
+        print(f"Hata: {filename} dosyasına kaydedilemedi: {e}")
 
-user_spotify_tokens = load_spotify_tokens()
-
-# --- Google Generative AI Setup ---
-try:
-    if GENAI_API_KEY and GENAI_API_KEY != 'YOUR_GOOGLE_AI_API_KEY_HERE': # Basic check
-        genai_google.configure(api_key=GENAI_API_KEY)
-        print("Google Generative AI configured.")
-    else:
-        print("Google Generative AI API key not found or is a placeholder. !quant command may not work.")
-except Exception as e:
-    print(f"Failed to configure Google Generative AI: {e}")
-
-
-# --- Bot Intents and Setup ---
 intents = discord.Intents.default()
 intents.message_content = True
-intents.messages = True
+intents.members = True
 intents.voice_states = True
-bot = commands.Bot(command_prefix='!', intents=intents, case_insensitive=True, help_command=None)
+intents.messages = True
 
-if not hasattr(bot, 'sarki_kuyrugu'):
-    bot.sarki_kuyrugu = [] # Stores (ctx, query_or_url, optional_sp_instance)
-if not hasattr(bot, 'current_song_url'):
-    bot.current_song_url = None # For potential 'seek' like commands in future
+bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
-# --- Logging Events ---
+bot.sarki_kuyrugu = []
+bot.now_playing = {}
+bot.current_song_url = None
+bot.active_games = {}
+bot.xp_cooldowns = {}
+bot.vc_idle_timer = 0
+bot.blackjack_games = {}
+bot.active_battles = {}
+
+bot.levels = load_json(LEVELS_FILE)
+bot.economy = load_json(ECONOMY_FILE)
+bot.server_settings = load_json(SETTINGS_FILE)
+bot.warnings = load_json(WARNINGS_FILE)
+user_spotify_tokens = {int(k): v for k, v in load_json(TOKEN_STORAGE_FILE).items()}
+
+def save_spotify_tokens(tokens):
+    save_json(TOKEN_STORAGE_FILE, tokens)
+
+try:
+    sp_oauth = SpotifyOAuth(client_id=SPOTIPY_CLIENT_ID, client_secret=SPOTIPY_CLIENT_SECRET, redirect_uri=SPOTIPY_REDIRECT_URI, scope="user-library-read playlist-read-private playlist-modify-public")
+except Exception as e:
+    print(f"Spotify OAuth yapılandırılamadı. Spotify komutları çalışmayabilir. Hata: {e}")
+
+if GENAI_API_KEY:
+    try:
+        genai_google.configure(api_key=GENAI_API_KEY)
+        print("Google Generative AI yapılandırıldı.")
+    except Exception as e:
+        print(f"Google Generative AI yapılandırılamadı: {e}")
+
+
+
 @bot.event
-async def on_message_delete(message):
-    if message.author == bot.user: return
-    log_channel = bot.get_channel(LOG_CHANNEL_ID)
-    if log_channel:
-        embed = discord.Embed(description=f"🗑️ **Mesaj silindi:** {message.author.mention} tarafından\n**Kanal:** {message.channel.mention}\n**İçerik:**\n```{message.content}```", color=discord.Color.orange(), timestamp=datetime.datetime.now(datetime.timezone.utc))
-        embed.set_footer(text=f"Kullanıcı ID: {message.author.id}")
-        await log_channel.send(embed=embed)
+async def on_ready():
+    """Bot çalıştığında yapılacaklar."""
+    print(f'{bot.user} olarak giriş yapıldı!')
+    print(f"Discord.py API Sürümü: {discord.__version__}")
+    print(f"Sunucu Sayısı: {len(bot.guilds)}")
+    try:
+        print("Global komutlar senkronize ediliyor... (Bu işlem yeni botlarda bir saat kadar sürebilir)")
+        await bot.tree.sync()
+        print("Global komut senkronizasyonu tamamlandı.")
+    except Exception as e:
+        print(f"Komut senkronizasyonu sırasında hata: {e}")
+
+    await bot.change_presence(activity=discord.Game(name="/help | Quant Bot"))
+    bot.vc_idle_timer = bot.loop.time()
+    if not check_vc_idle.is_running():
+        check_vc_idle.start()
 
 @bot.event
-async def on_message_edit(before, after):
-    if before.author == bot.user or before.content == after.content: return
-    log_channel = bot.get_channel(LOG_CHANNEL_ID)
-    if log_channel:
-        embed = discord.Embed(description=f"✏️ **Mesaj düzenlendi:** {before.author.mention} tarafından\n**Kanal:** {before.channel.mention}\n[Mesaja Git]({after.jump_url})", color=discord.Color.blue(), timestamp=datetime.datetime.now(datetime.timezone.utc))
-        embed.add_field(name="Önceki Hali", value=f"```{before.content}```", inline=False)
-        embed.add_field(name="Sonraki Hali", value=f"```{after.content}```", inline=False)
-        embed.set_footer(text=f"Kullanıcı ID: {before.author.id}")
-        await log_channel.send(embed=embed)
+async def on_message(message: discord.Message):
+    """Her mesaj gönderildiğinde tetiklenir."""
+    if message.author.bot or not message.guild:
+        return
 
+    guild_id = str(message.guild.id)
+    user_id = str(message.author.id)
+
+    cooldown_key = f"{guild_id}-{user_id}"
+    if cooldown_key not in bot.xp_cooldowns or time.time() - bot.xp_cooldowns.get(cooldown_key, 0) > 60:
+        bot.levels.setdefault(guild_id, {})
+        bot.levels[guild_id].setdefault(user_id, {"xp": 0, "level": 1})
+
+        xp_to_add = random.randint(15, 25)
+        bot.levels[guild_id][user_id]["xp"] += xp_to_add
+
+        current_level = bot.levels[guild_id][user_id]["level"]
+        xp_for_next_level = int((current_level ** 2) * 100)
+
+        if bot.levels[guild_id][user_id]["xp"] >= xp_for_next_level:
+            bot.levels[guild_id][user_id]["level"] += 1
+            new_level = bot.levels[guild_id][user_id]["level"]
+            bot.levels[guild_id][user_id]["xp"] -= xp_for_next_level
+            try:
+                await message.channel.send(f"🎉 Tebrikler {message.author.mention}, **Seviye {new_level}** oldun!", delete_after=30)
+            except discord.Forbidden:
+                pass
+
+        bot.xp_cooldowns[cooldown_key] = time.time()
+        save_json(LEVELS_FILE, bot.levels)
+
+    content_lower = message.content.lower()
+    if "sa" == content_lower:
+        await message.channel.send("**Aleyküm Selam** 👋", delete_after=20)
+
+    await bot.process_commands(message)
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    """Yeni üye katıldığında tetiklenir."""
+    guild_id = str(member.guild.id)
+    settings = bot.server_settings.get(guild_id, {})
+    channel_id = settings.get("welcome_channel")
+    if channel_id and (channel := member.guild.get_channel(channel_id)):
+        embed = discord.Embed(description=f"🎉 Sunucumuza hoş geldin, {member.mention}!", color=discord.Color.green(), timestamp=datetime.datetime.now())
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.set_footer(text=f"{member.guild.name} | Toplam Üye: {member.guild.member_count}")
+        try:
+            await channel.send(embed=embed)
+        except discord.Forbidden:
+            pass
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    """Bir üye ayrıldığında tetiklenir."""
+    guild_id = str(member.guild.id)
+    settings = bot.server_settings.get(guild_id, {})
+    channel_id = settings.get("goodbye_channel")
+    if channel_id and (channel := member.guild.get_channel(channel_id)):
+        embed = discord.Embed(description=f"👋 **{member.display_name}** ({member.name}) aramızdan ayrıldı.", color=discord.Color.red(), timestamp=datetime.datetime.now())
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.set_footer(text=f"{member.guild.name} | Toplam Üye: {member.guild.member_count}")
+        try:
+            await channel.send(embed=embed)
+        except discord.Forbidden:
+            pass
+
+@bot.event
+async def on_message_delete(message: discord.Message):
+    if message.author == bot.user or not message.guild: return
+    try:
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            embed = discord.Embed(description=f"🗑️ **Mesaj silindi:** {message.author.mention} tarafından\n**Kanal:** {message.channel.mention}\n**İçerik:**\n```{message.content or 'İçerik yok (Embed/Dosya olabilir)'}```", color=discord.Color.orange(), timestamp=datetime.datetime.now(datetime.timezone.utc))
+            embed.set_footer(text=f"Kullanıcı ID: {message.author.id}")
+            await log_channel.send(embed=embed)
+    except Exception:
+        pass
+
+@bot.event
+async def on_message_edit(before: discord.Message, after: discord.Message):
+    if before.author == bot.user or before.content == after.content or not before.guild: return
+    try:
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            embed = discord.Embed(description=f"✏️ **Mesaj düzenlendi:** {before.author.mention} tarafından\n**Kanal:** {before.channel.mention}\n[Mesaja Git]({after.jump_url})", color=discord.Color.blue(), timestamp=datetime.datetime.now(datetime.timezone.utc))
+            embed.add_field(name="Önceki Hali", value=f"```{before.content or 'İçerik yok'}```", inline=False)
+            embed.add_field(name="Sonraki Hali", value=f"```{after.content or 'İçerik yok'}```", inline=False)
+            embed.set_footer(text=f"Kullanıcı ID: {before.author.id}")
+            await log_channel.send(embed=embed)
+    except Exception:
+        pass
+        
 @bot.event
 async def on_member_update(before, after):
-    log_channel = bot.get_channel(LOG_CHANNEL_ID)
-    if not log_channel: return
-
-    if before.roles != after.roles:
-        added_roles = [role for role in after.roles if role not in before.roles]
-        removed_roles = [role for role in before.roles if role not in after.roles]
+    if before.roles == after.roles: return
+    try:
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if not log_channel: return
+        added_roles = [role.name for role in after.roles if role not in before.roles]
+        removed_roles = [role.name for role in before.roles if role not in after.roles]
         if added_roles:
-            await log_channel.send(f"✅ {after.mention} kullanıcısına **{', '.join([r.name for r in added_roles])}** rol(leri) verildi.")
+            await log_channel.send(f"✅ {after.mention} kullanıcısına **{', '.join(added_roles)}** rol(leri) verildi.")
         if removed_roles:
-            await log_channel.send(f"❌ {after.mention} kullanıcısından **{', '.join([r.name for r in removed_roles])}** rol(leri) kaldırıldı.")
+            await log_channel.send(f"❌ {after.mention} kullanıcısından **{', '.join(removed_roles)}** rol(leri) kaldırıldı.")
+    except Exception:
+        pass
+        
 
-# --- Utility Commands ---
-@bot.command(name='ping')
-async def ping(ctx):
-    await ctx.send(f'Pong! {round(bot.latency * 1000)}ms')
-
-@bot.command(name='saat')
-async def saat(ctx):
-    now = datetime.datetime.now()
-    current_time = now.strftime("%H:%M:%S")
-    await ctx.send(f'🕒 Geçerli saat: {current_time}')
-
-# --- Moderation Commands ---
-@commands.has_role('Moderator') # Ensure 'Moderator' role exists
-@bot.command(name='duyuru')
-async def duyuru(ctx):
-    def check(message):
-        return message.author == ctx.author and message.channel == ctx.channel
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    """Uygulama komutlarındaki hataları yakalar."""
+    error_message = f"Beklenmedik bir hata oluştu: {error}"
+    if isinstance(error, app_commands.MissingRole):
+        error_message = f"Bu komutu kullanmak için '{error.missing_role}' rolüne sahip olmalısınız."
+    elif isinstance(error, app_commands.CommandOnCooldown):
+        error_message = f"Bu komut bekleme süresinde. {error.retry_after:.2f} saniye sonra tekrar deneyin."
+    elif isinstance(error, app_commands.CheckFailure) or isinstance(error, app_commands.MissingPermissions):
+        error_message = "Bu komutu kullanmak için gerekli yetkilere sahip değilsiniz."
+    elif isinstance(error, app_commands.CommandInvokeError):
+        error_message = f"Komut yürütülürken bir hata oluştu: {error.original}"
 
     try:
-        await ctx.send("Lütfen duyuru için bir başlık yazın (60s):")
-        title_msg = await bot.wait_for("message", check=check, timeout=60.0)
-        title = title_msg.content
+        if interaction.response.is_done():
+            await interaction.followup.send(error_message, ephemeral=True)
+        else:
+            await interaction.response.send_message(error_message, ephemeral=True, delete_after=15)
+    except (discord.errors.InteractionResponded, discord.errors.NotFound):
+        try:
+            await interaction.edit_original_response(content=error_message, view=None, embed=None)
+        except Exception as e:
+            print(f"Hata mesajı gönderilirken ek bir hata oluştu: {e}")
+    print(f"App command error in guild {interaction.guild.name if interaction.guild else 'DM'} ({interaction.guild_id}): {error}")
 
-        await ctx.send("Lütfen duyurunun içeriğini yazın (120s):")
-        content_msg = await bot.wait_for("message", check=check, timeout=120.0)
-        content = content_msg.content
+bot.tree.on_error = on_app_command_error
 
-        await ctx.send("Duyurunun gönderileceği kanalın adını veya ID'sini yazın (60s):")
-        channel_msg = await bot.wait_for("message", check=check, timeout=60.0)
-        channel_input = channel_msg.content
-        
-        target_channel = None
-        if channel_input.isdigit():
-            target_channel = bot.get_channel(int(channel_input))
-        if not target_channel: # Try by name if ID failed or wasn't an ID
-            target_channel = discord.utils.get(ctx.guild.text_channels, name=channel_input)
-        
-        if target_channel is None:
-            await ctx.send(f"'{channel_input}' kanalı bulunamadı.")
-            return
 
-        embed = discord.Embed(title=title, description=content, color=discord.Color.blue())
-        embed.set_footer(text=f"Duyuru yapan: {ctx.author.display_name}")
-        embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
-        await target_channel.send(embed=embed)
-        await ctx.send(f"Duyuru başarıyla {target_channel.mention} kanalına gönderildi!")
+settings_group = app_commands.Group(name="settings", description="Sunucuya özel bot ayarlarını yönetir.", default_permissions=discord.Permissions(manage_guild=True))
 
-    except asyncio.TimeoutError:
-        await ctx.send("Zaman aşımına uğradınız. Lütfen yeniden deneyin.")
-    except ValueError:
-        await ctx.send("Hatalı bir kanal ID'si girdiniz.")
-    except Exception as e:
-        await ctx.send(f"Bir hata oluştu: {e}")
+@settings_group.command(name="welcome", description="Hoş geldin mesajlarının gönderileceği kanalı ayarlar.")
+async def set_welcome_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    guild_id = str(interaction.guild.id)
+    bot.server_settings.setdefault(guild_id, {})
+    bot.server_settings[guild_id]["welcome_channel"] = channel.id
+    save_json(SETTINGS_FILE, bot.server_settings)
+    await interaction.response.send_message(f"✅ Hoş geldin kanalı {channel.mention} olarak ayarlandı.", ephemeral=True)
+
+@settings_group.command(name="goodbye", description="Güle güle mesajlarının gönderileceği kanalı ayarlar.")
+async def set_goodbye_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    guild_id = str(interaction.guild.id)
+    bot.server_settings.setdefault(guild_id, {})
+    bot.server_settings[guild_id]["goodbye_channel"] = channel.id
+    save_json(SETTINGS_FILE, bot.server_settings)
+    await interaction.response.send_message(f"✅ Güle güle kanalı {channel.mention} olarak ayarlandı.", ephemeral=True)
+
+bot.tree.add_command(settings_group)
+
 
 def parse_duration(duration_str: str) -> int:
-    """Parses duration string like 1d, 10h, 30m, 5s into seconds."""
     unit = duration_str[-1].lower()
-    value = int(duration_str[:-1])
+    value_str = duration_str[:-1]
+    if not value_str.isdigit(): raise ValueError("Sayısal değer hatalı.")
+    value = int(value_str)
     if unit == 's': return value
     if unit == 'm': return value * 60
     if unit == 'h': return value * 3600
     if unit == 'd': return value * 86400
-    raise ValueError("Invalid duration unit. Use s, m, h, d.")
+    raise ValueError("Geçersiz birim. s, m, h, d kullanın.")
 
-@commands.has_role('Moderator')
-@bot.command(name='mutetx')
-async def mute_text(ctx, member: discord.Member, duration_str: str):
-    try:
-        seconds = parse_duration(duration_str)
-    except (ValueError, IndexError):
-        await ctx.send('Süreyi doğru formatta girin. Örneğin: 1d, 10h, 30m, 5s.')
-        return
+@bot.tree.command(name="warn", description="Bir üyeyi sebep belirterek uyarır.")
+@app_commands.checks.has_permissions(kick_members=True)
+async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
+    if member.bot or member == interaction.user: return await interaction.response.send_message("Kendinizi veya botları uyaramazsınız.", ephemeral=True)
+    if member.top_role >= interaction.user.top_role and interaction.guild.owner != interaction.user: return await interaction.response.send_message("Kendinizden daha yüksek veya aynı roldeki birini uyaramazsınız.", ephemeral=True)
 
-    muted_role = discord.utils.get(ctx.guild.roles, name='Muted')
-    if not muted_role:
-        try:
-            muted_role = await ctx.guild.create_role(name='Muted', reason="Metin susturma için rol oluşturuldu.")
-            for channel in ctx.guild.text_channels:
-                await channel.set_permissions(muted_role, send_messages=False, add_reactions=False)
-            await ctx.send("'Muted' rolü oluşturuldu ve ayarlandı.")
-        except discord.Forbidden:
-            await ctx.send("Rol oluşturma veya izinleri ayarlama yetkim yok.")
-            return
+    guild_id = str(interaction.guild.id)
+    user_id = str(member.id)
+    bot.warnings.setdefault(guild_id, {})
+    bot.warnings[guild_id].setdefault(user_id, [])
     
-    try:
-        await member.add_roles(muted_role, reason=f"Susturan: {ctx.author}, Süre: {duration_str}")
-        await ctx.send(f"**{member.mention}, {duration_str} süreyle metin kanallarında susturuldu.**")
-        await asyncio.sleep(seconds)
-        if muted_role in member.roles: # Check if still muted by this role
-            await member.remove_roles(muted_role, reason="Susturma süresi doldu.")
-            await ctx.send(f"**{member.mention} için metin kanallarındaki susturma kaldırıldı.**")
-    except discord.Forbidden:
-        await ctx.send(f"{member.mention} üzerinde işlem yapma yetkim yok (rolü benden yüksek olabilir).")
-
-
-@commands.has_role('Moderator')
-@bot.command(name='mutevc')
-async def mute_voice(ctx, member: discord.Member, duration_str: str):
-    try:
-        seconds = parse_duration(duration_str)
-    except (ValueError, IndexError):
-        await ctx.send('Süreyi doğru formatta girin. Örneğin: 1d, 10h, 30m, 5s.')
-        return
-
-    if not member.voice or not member.voice.channel:
-        await ctx.send(f"{member.mention} bir ses kanalında değil.")
-        return
+    warning_data = {"moderator_id": interaction.user.id, "reason": reason, "timestamp": int(time.time())}
+    bot.warnings[guild_id][user_id].append(warning_data)
+    save_json(WARNINGS_FILE, bot.warnings)
     
-    try:
-        await member.edit(mute=True, reason=f"Susturan: {ctx.author}, Süre: {duration_str}")
-        await ctx.send(f"**{member.mention}, {duration_str} süreyle ses kanallarında susturuldu.**")
-        await asyncio.sleep(seconds)
-        if member.voice and member.voice.mute: # Check if still muted by bot
-             await member.edit(mute=False, reason="Susturma süresi doldu.")
-             await ctx.send(f"**{member.mention} için ses kanallarındaki susturma kaldırıldı.**")
-    except discord.Forbidden:
-        await ctx.send(f"{member.mention} üzerinde işlem yapma yetkim yok.")
+    await interaction.response.send_message(f"✅ {member.mention}, `{reason}` sebebiyle uyarıldı.")
+    try: await member.send(f"**{interaction.guild.name}** sunucusunda `{reason}` sebebiyle uyarıldınız.")
+    except discord.Forbidden: pass
 
-
-@commands.has_role('Moderator')
-@bot.command(name='unmutetx')
-async def unmutetx(ctx, member: discord.Member):
-    muted_role = discord.utils.get(ctx.guild.roles, name='Muted')
-    if muted_role and muted_role in member.roles:
-        try:
-            await member.remove_roles(muted_role, reason=f"Susturmayı kaldıran: {ctx.author}")
-            await ctx.send(f"**{member.mention} kullanıcısının metin kanallarındaki susturması kaldırıldı.**")
-        except discord.Forbidden:
-            await ctx.send(f"{member.mention} üzerinde işlem yapma yetkim yok.")
-    else:
-        await ctx.send(f"**{member.mention} zaten metin kanallarında susturulmamış.**")
-
-@commands.has_role('Moderator')
-@bot.command(name='unmutevc')
-async def unmutevc(ctx, member: discord.Member):
-    if member.voice and member.voice.mute:
-        try:
-            await member.edit(mute=False, reason=f"Susturmayı kaldıran: {ctx.author}")
-            await ctx.send(f"**{member.mention} kullanıcısının ses kanallarındaki susturması kaldırıldı.**")
-        except discord.Forbidden:
-            await ctx.send(f"{member.mention} üzerinde işlem yapma yetkim yok.")
-    else:
-        await ctx.send(f"**{member.mention} zaten sesli susturulmamış veya bir ses kanalında değil.**")
-
-
-@bot.command(name="sil")
-async def sil(ctx, number: int):
-    if not 1 <= number <= 100: # Discord API limit for bulk delete is 100
-        await ctx.send('Lütfen 1 ile 100 arasında bir sayı girin.')
-        return
-    try:
-        deleted = await ctx.channel.purge(limit=number + 1) # +1 to include the command message itself
-        await ctx.send(f'{len(deleted) - 1} mesaj silindi.', delete_after=5)
-    except discord.Forbidden:
-        await ctx.send("Mesajları silme yetkim yok.")
-    except discord.HTTPException as e:
-        await ctx.send(f"Mesajlar silinirken bir hata oluştu: {e}")
-
-@bot.command(name='translate', aliases=['çeviri'])
-async def translate_command(ctx, *, query: str):
-    try:
-        parts = query.split()
-        if len(parts) < 2:
-            await ctx.send("Kullanım: `!translate <çevirilecek metin> <hedef dil kodu>` (örn: `!translate hello world tr` veya `!translate merhaba dünya english`)")
-            return
-
-        target_language_input = parts[-1].lower()
-        text_to_translate = " ".join(parts[:-1])
-
-        if not text_to_translate:
-            await ctx.send("Lütfen çevirmek için bir metin girin.")
-            return
-
-        actual_target_language_code = None
-        if target_language_input in LANGUAGES: 
-            actual_target_language_code = target_language_input
-        else: 
-            for code, name in LANGUAGES.items():
-                if target_language_input == name.lower():
-                    actual_target_language_code = code
-                    break
+@bot.tree.command(name="warnings", description="Bir üyenin aldığı tüm uyarıları listeler.")
+@app_commands.checks.has_permissions(kick_members=True)
+async def list_warnings(interaction: discord.Interaction, member: discord.Member):
+    guild_id = str(interaction.guild.id)
+    user_id = str(member.id)
+    user_warnings = bot.warnings.get(guild_id, {}).get(user_id, [])
+    if not user_warnings: return await interaction.response.send_message(f"{member.display_name} adlı kullanıcının hiç uyarısı yok.", ephemeral=True)
         
-        if not actual_target_language_code:
-            await ctx.send(f"Geçersiz hedef dil: '{parts[-1]}'. Lütfen geçerli bir dil kodu (örn: en, tr) veya tam dil adı (örn: english, turkish) girin. Tam liste için `!diller` komutunu kullanabilirsiniz.")
-            return
+    embed = discord.Embed(title=f"Uyarılar: {member.display_name}", color=discord.Color.orange())
+    for i, warn_data in enumerate(user_warnings, 1):
+        mod_id = warn_data["moderator_id"]
+        mod = interaction.guild.get_member(mod_id) or f"Bilinmeyen ({mod_id})"
+        timestamp = f"<t:{warn_data['timestamp']}:F>"
+        embed.add_field(name=f"Uyarı #{i}", value=f"**Sebep:** {warn_data['reason']}\n**Moderatör:** {mod}\n**Tarih:** {timestamp}", inline=False)
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
-        translator = Translator()
+@bot.tree.command(name='duyuru', description="Belirtilen kanala bir duyuru gönderir.")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(title="Duyurunun başlığı", content="Duyurunun içeriği", channel="Duyurunun gönderileceği metin kanalı")
+async def duyuru(interaction: discord.Interaction, title: str, content: str, channel: discord.TextChannel):
+    embed = discord.Embed(title=title, description=content, color=discord.Color.blue(), timestamp=datetime.datetime.now(datetime.timezone.utc))
+    embed.set_footer(text=f"Duyuru yapan: {interaction.user.display_name}")
+    await channel.send(embed=embed)
+    await interaction.response.send_message(f"Duyuru başarıyla {channel.mention} kanalına gönderildi!", ephemeral=True)
+
+@bot.tree.command(name='mute', description="Bir üyeyi belirtilen süreyle metin ve ses kanallarında susturur.")
+@app_commands.checks.has_permissions(moderate_members=True)
+@app_commands.describe(member="Susturulacak üye", duration="Süre (örn: 10m, 1h, 2d)", reason="Sebep")
+async def mute(interaction: discord.Interaction, member: discord.Member, duration: str, reason: str = "Belirtilmedi"):
+    try:
+        delta = datetime.timedelta(seconds=parse_duration(duration))
+    except ValueError as e:
+        return await interaction.response.send_message(f'Geçersiz süre formatı. Örnek: `1d`, `10h`, `30m`, `5s`. Hata: {e}', ephemeral=True)
+    
+    await member.timeout(delta, reason=reason)
+    await interaction.response.send_message(f"**{member.mention}**, `{duration}` süreyle metin ve ses kanallarında susturuldu. Sebep: {reason}")
+
+@bot.tree.command(name='unmute', description="Üyenin metin&ses susturmasını kaldırır.")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def unmute(interaction: discord.Interaction, member: discord.Member):
+    if member.is_timed_out():
+        await member.timeout(None, reason=f"Susturmayı kaldıran: {interaction.user}")
+        await interaction.response.send_message(f"**{member.mention}** kullanıcısının susturması kaldırıldı.")
+    else:
+        await interaction.response.send_message(f"**{member.mention}** zaten susturulmamış.", ephemeral=True)
         
-        translation_result = await bot.loop.run_in_executor(
-            None, translator.translate, text_to_translate, actual_target_language_code
-        )
+@bot.tree.command(name="sil", description="Belirtilen sayıda mesajı (1-100) siler.")
+@app_commands.checks.has_permissions(manage_messages=True)
+@app_commands.describe(number="Silinecek mesaj sayısı")
+async def sil(interaction: discord.Interaction, number: app_commands.Range[int, 1, 100]):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    deleted = await interaction.channel.purge(limit=number)
+    await interaction.followup.send(f'✅ {len(deleted)} mesaj başarıyla silindi.', ephemeral=True)
 
-        final_translation = None
-        if inspect.isawaitable(translation_result):
-            print(f"DEBUG: translate_command received an awaitable from run_in_executor: {translation_result}. Awaiting it now.")
-            final_translation = await translation_result
+
+
+
+@bot.tree.command(name="rank", description="Kendi seviyenizi veya başka bir üyenin seviyesini gösterir.")
+async def rank(interaction: discord.Interaction, member: discord.Member = None):
+    await interaction.response.defer()
+    member = member or interaction.user
+    guild_id = str(interaction.guild.id)
+    user_id = str(member.id)
+    
+    user_data = bot.levels.get(guild_id, {}).get(user_id)
+    if not user_data:
+        return await interaction.followup.send(f"{member.display_name} henüz hiç XP kazanmamış.", ephemeral=True)
+        
+    level = user_data.get("level", 1)
+    xp = user_data.get("xp", 0)
+    xp_for_next_level = int((level ** 2) * 100)
+    
+    leaderboard = sorted(bot.levels.get(guild_id, {}).items(), key=lambda item: (item[1].get('level', 1), item[1].get('xp', 0)), reverse=True)
+    rank_pos = next((i for i, (uid, data) in enumerate(leaderboard, 1) if uid == user_id), 0)
+            
+    progress = int((xp / xp_for_next_level) * 20) if xp_for_next_level > 0 else 0
+    progress_bar = "🟩" * progress + "⬛" * (20 - progress)
+    
+    embed = discord.Embed(title=f"🏆 {member.display_name} Seviye Kartı", color=member.color or discord.Color.blurple())
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="Seviye", value=f"**{level}**", inline=True)
+    embed.add_field(name="Sıralama", value=f"**#{rank_pos}**", inline=True)
+    embed.add_field(name="Tecrübe Puanı (XP)", value=f"`{xp} / {xp_for_next_level}`", inline=False)
+    embed.add_field(name="İlerleme", value=f"`{progress_bar}`", inline=False)
+    await interaction.followup.send(embed=embed)
+
+class LeaderboardView(ui.View):
+    def __init__(self, interaction, data, per_page=10):
+        super().__init__(timeout=180)
+        self.interaction = interaction
+        self.data = data
+        self.per_page = per_page
+        self.current_page = 0
+        self.max_pages = (len(data) - 1) // per_page
+        self.update_buttons()
+
+    def update_buttons(self):
+        self.children[0].disabled = self.current_page == 0
+        self.children[1].disabled = self.current_page >= self.max_pages
+
+    async def create_embed(self):
+        start = self.current_page * self.per_page
+        end = start + self.per_page
+        
+        embed = discord.Embed(title=f"🏆 {self.interaction.guild.name} Liderlik Tablosu", color=discord.Color.gold())
+        
+        description = ""
+        for i, (user_id, user_data) in enumerate(self.data[start:end], start=start + 1):
+            member = self.interaction.guild.get_member(int(user_id))
+            name = member.display_name if member else f"Ayrılmış Üye ({user_id[-4:]})"
+            level = user_data.get('level', 0)
+            xp = user_data.get('xp', 0)
+            description += f"`{i}.` **{name}** - Seviye: `{level}` (XP: `{xp}`)\n"
+            
+        embed.description = description or "Liderlik tablosu boş."
+        embed.set_footer(text=f"Sayfa {self.current_page + 1} / {self.max_pages + 1}")
+        return embed
+
+    @ui.button(label="Önceki", style=ButtonStyle.primary, emoji="⬅️")
+    async def previous_button(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user != self.interaction.user:
+            return await interaction.response.send_message("Sadece komutu başlatan kişi sayfaları değiştirebilir.", ephemeral=True)
+        self.current_page -= 1
+        self.update_buttons()
+        embed = await self.create_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @ui.button(label="Sonraki", style=ButtonStyle.primary, emoji="➡️")
+    async def next_button(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user != self.interaction.user:
+            return await interaction.response.send_message("Sadece komutu başlatan kişi sayfaları değiştirebilir.", ephemeral=True)
+        self.current_page += 1
+        self.update_buttons()
+        embed = await self.create_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+@bot.tree.command(name="leaderboard", description="Sunucunun seviye liderlik tablosunu gösterir.")
+async def leaderboard(interaction: discord.Interaction):
+    await interaction.response.defer()
+    guild_id = str(interaction.guild.id)
+    guild_levels = bot.levels.get(guild_id, {})
+    if not guild_levels: return await interaction.followup.send("Bu sunucuda henüz kimse XP kazanmamış.")
+        
+    sorted_users = sorted(guild_levels.items(), key=lambda item: (item[1].get('level', 0), item[1].get('xp', 0)), reverse=True)
+    
+    view = LeaderboardView(interaction, sorted_users)
+    embed = await view.create_embed()
+    await interaction.followup.send(embed=embed, view=view)
+
+@bot.tree.command(name="daily", description="Günlük Quant ödülünüzü alın.")
+@app_commands.checks.cooldown(1, 86400, key=lambda i: (i.guild_id, i.user.id))
+async def daily(interaction: discord.Interaction):
+    guild_id = str(interaction.guild.id)
+    user_id = str(interaction.user.id)
+    
+    bot.economy.setdefault(guild_id, {})
+    bot.economy[guild_id].setdefault(user_id, {"balance": 0})
+    
+    reward = random.randint(100, 250)
+    bot.economy[guild_id][user_id]["balance"] += reward
+    save_json(ECONOMY_FILE, bot.economy)
+    
+    await interaction.response.send_message(f"🎉 Günlük ödülün olan **{reward} Quant** hesabına eklendi!")
+
+@bot.tree.command(name="balance", description="Quant bakiyenizi veya başka bir üyenin bakiyesini gösterir.")
+async def balance(interaction: discord.Interaction, member: discord.Member = None):
+    member = member or interaction.user
+    guild_id = str(interaction.guild.id)
+    user_id = str(member.id)
+    
+    user_balance = bot.economy.get(guild_id, {}).get(user_id, {}).get("balance", 0)
+    embed = discord.Embed(title=f"{member.display_name} Bakiye Bilgisi", description=f"💰 Mevcut bakiye: **{user_balance} Quant**", color=discord.Color.green())
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="pay", description="Başka bir üyeye Quant gönderin.")
+@app_commands.describe(member="Quant gönderilecek üye", amount="Gönderilecek miktar")
+async def pay(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, None]):
+    if member.bot or member == interaction.user: return await interaction.response.send_message("Kendinize veya bir bota para gönderemezsiniz.", ephemeral=True)
+
+    guild_id = str(interaction.guild.id)
+    sender_id = str(interaction.user.id)
+    receiver_id = str(member.id)
+
+    bot.economy.setdefault(guild_id, {})
+    bot.economy[guild_id].setdefault(sender_id, {"balance": 0})
+    bot.economy[guild_id].setdefault(receiver_id, {"balance": 0})
+
+    sender_balance = bot.economy[guild_id][sender_id].get("balance", 0)
+    if sender_balance < amount: return await interaction.response.send_message(f"Yetersiz bakiye! Sadece **{sender_balance} Quant**'a sahipsin.", ephemeral=True)
+
+    bot.economy[guild_id][sender_id]["balance"] -= amount
+    bot.economy[guild_id][receiver_id]["balance"] += amount
+    save_json(ECONOMY_FILE, bot.economy)
+    await interaction.response.send_message(f"✅ Başarıyla {member.mention} kullanıcısına **{amount} Quant** gönderdin.")
+
+
+async def play_audio(interaction: discord.Interaction, query_or_url: str, display_name: str, sp_instance=None, repeat_count=1):
+    voice_channel = interaction.user.voice.channel
+    voice_client = interaction.guild.voice_client
+
+    if not voice_client:
+        voice_client = await voice_channel.connect()
+    elif voice_client.channel != voice_channel:
+        await voice_client.move_to(voice_channel)
+
+    bot.now_playing = {'interaction': interaction, 'query': query_or_url, 'display_name': display_name, 'sp': sp_instance, 'repeats_left': repeat_count}
+
+    ydl_opts = {'format': 'bestaudio/best', 'quiet': True, 'no_warnings': True, 'noplaylist': True, 'default_search': 'ytsearch1:', 'source_address': '0.0.0.0'}
+
+    def after_playing_callback(error, current_interaction, vc):
+        if error: print(f"Player error: {error}")
+        next_coro = None
+
+        if bot.now_playing and bot.now_playing.get('repeats_left', 1) > 1:
+            bot.now_playing['repeats_left'] -= 1
+            info = bot.now_playing
+            coro_msg = info['interaction'].channel.send(f"🔁 Tekrarlanıyor: **{info['display_name']}** ({info['repeats_left']} tekrar kaldı)", delete_after=10)
+            asyncio.run_coroutine_threadsafe(coro_msg, bot.loop)
+            next_coro = play_audio(info['interaction'], info['query'], info['display_name'], info['sp'], info['repeats_left'])
+        elif bot.sarki_kuyrugu:
+            bot.now_playing = {}
+            next_song_info = bot.sarki_kuyrugu.pop(0)
+            next_coro = play_audio(next_song_info['interaction'], next_song_info['query'], next_song_info['query'], sp_instance=next_song_info.get('sp'), repeat_count=next_song_info.get('repeat', 1))
         else:
-            final_translation = translation_result
+            bot.now_playing = {}
+            if vc and vc.is_connected():
+                coro = current_interaction.channel.send("🎶 Müzik kuyruğu tamamlandı.", delete_after=15)
+                asyncio.run_coroutine_threadsafe(coro, bot.loop)
+                bot.vc_idle_timer = bot.loop.time()
         
-        if final_translation is None or not hasattr(final_translation, 'src') or not hasattr(final_translation, 'text'):
-            await ctx.send("Çeviri sonucu alınamadı veya beklenmedik bir formatta geldi.")
-            print(f"DEBUG: Final translation object was None or malformed: {final_translation}")
-            return
-
-        source_lang_name = LANGUAGES.get(final_translation.src.lower(), final_translation.src.upper())
-        target_lang_name = LANGUAGES.get(actual_target_language_code.lower(), actual_target_language_code.upper())
-
-        embed = discord.Embed(title="Çeviri Sonucu", color=discord.Color.green())
-        embed.add_field(name=f"Kaynak Metin ({source_lang_name})", value=f"```{text_to_translate}```", inline=False)
-        embed.add_field(name=f"Çevrilen Metin ({target_lang_name})", value=f"```{final_translation.text}```", inline=False)
-        embed.set_footer(text=f"Çeviren: Google Translate | İsteyen: {ctx.author.display_name}")
-        embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
-        await ctx.send(embed=embed)
-
-    except Exception as e:
-        await ctx.send(f"Çeviri sırasında bir hata oluştu: {str(e)}")
-        print(f"Translate command error: {e} ({type(e)})")
-        import traceback
-        traceback.print_exc()
-
-@bot.command(name="diller", aliases=["languages"])
-async def list_languages(ctx):
-    lang_list = [f"`{code}`: {name.capitalize()}" for code, name in LANGUAGES.items()]
-    
-    output = "Kullanılabilir Diller (Kod: Adı):\n"
-    current_message = output
-    messages_to_send = []
-
-    for lang_entry in lang_list:
-        if len(current_message) + len(lang_entry) + 2 > 1990: 
-            messages_to_send.append(current_message)
-            current_message = "" # Start new message part with "" not with "output"
-        current_message += lang_entry + "\n"
-    
-    if current_message and current_message != output : # Add the last part if it has content beyond the header
-        messages_to_send.append(current_message)
-    elif not messages_to_send and current_message == output: # if only header was prepared
-         messages_to_send.append(output + "Liste boş veya alınamadı.")
-
-
-    if not messages_to_send: # Should not happen if LANGUAGES is populated
-        await ctx.send("Dil listesi alınamadı.")
-        return
-
-    for msg_part in messages_to_send:
-        await ctx.send(msg_part)
-    await ctx.send("Çeviri için dil kodunu (örn: `en`) veya tam adını İngilizce küçük harf (örn: `english`) kullanabilirsiniz.")
-# --- Spotify Authentication Commands ---
-@bot.command(name='spotify_login')
-async def spotify_login(ctx):
-    auth_url = sp_oauth.get_authorize_url() # state parameter is handled by spotipy
-    try:
-        await ctx.author.send(
-            f"Lütfen Spotify hesabına erişim izni vermek için şu bağlantıyı ziyaret et:\n{auth_url}\n\n"
-            "Giriş yaptıktan ve uygulamaya izin verdikten sonra, tarayıcının adres çubuğundaki URL'ye geri yönlendirileceksin. "
-            f"O URL'den (`{SPOTIPY_REDIRECT_URI}?code=KOD_BURADA&state=...` gibi bir şey) `code=` kısmından sonraki değeri kopyala "
-            "ve `!spotify_auth KOD_BURAYA` komutuyla bana gönder."
-        )
-        await ctx.send(f"{ctx.author.mention}, Spotify'a bağlanmak için sana DM gönderdim. Lütfen DM'lerini kontrol et.")
-    except discord.Forbidden:
-        await ctx.send(f"{ctx.author.mention}, sana DM gönderemiyorum. Lütfen bu sunucudaki üyelerden DM alımını etkinleştir.")
-    except Exception as e:
-        await ctx.send(f"Bir hata oluştu: {e}")
-        print(f"Error in spotify_login: {e}")
-
-@bot.command(name='spotify_auth')
-async def spotify_auth(ctx, *, code: str = None):
-    if not code:
-        await ctx.send("Lütfen `!spotify_auth <Spotify'dan_aldığın_kod>` formatında kodu gir.")
-        return
-    try:
-        token_info = sp_oauth.get_access_token(code.strip(), as_dict=True, check_cache=False)
-        user_spotify_tokens[ctx.author.id] = token_info
-        save_spotify_tokens(user_spotify_tokens)
-        await ctx.send(f"{ctx.author.mention}, Spotify hesabın başarıyla bağlandı! Artık `!playlist` komutunu kullanabilirsin.")
-    except Exception as e:
-        await ctx.send(f"Token alınırken bir hata oluştu. Kodun doğru ve süresinin geçmemiş olduğundan emin ol. Hata: {e}")
-        print(f"Spotify auth error for user {ctx.author.id} with code {code}: {e}")
-
-
-# --- Music Playing Logic ---
-async def play_audio(ctx, query_or_url: str, display_name: str, sp_instance=None):
-    voice_channel = ctx.author.voice.channel
-    if not voice_channel:
-        await ctx.send('Bir ses kanalında olmalısınız.')
-        return
-
-    if ctx.voice_client is None:
-        try:
-            voice_client = await voice_channel.connect()
-            bot.vc_idle_timer = asyncio.get_event_loop().time()
-        except Exception as e:
-            await ctx.send(f"Ses kanalına bağlanırken hata: {e}")
-            return
-    else:
-        voice_client = ctx.voice_client
-        if voice_client.channel != voice_channel:
-            try:
-                await voice_client.move_to(voice_channel)
-            except Exception as e:
-                 await ctx.send(f"Ses kanalına geçerken hata: {e}")
-                 return
-    
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'no_warnings': True,
-        'noplaylist': True,
-        'default_search': 'ytsearch1:', # Search and pick first result
-        'source_address': '0.0.0.0' # Bind to all interfaces for some hosting environments
-    }
+        if next_coro: asyncio.run_coroutine_threadsafe(next_coro, bot.loop)
 
     try:
-        loop = asyncio.get_event_loop()
-        if not query_or_url.startswith('http'): # If it's a search query
-            data = await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(ydl_opts).extract_info(f"ytsearch1:{query_or_url}", download=False))
-            if not data.get('entries'):
-                await ctx.send(f"'{display_name}' için sonuç bulunamadı.")
-                return # Call after_playing manually if it fails here and we need to process queue
-            entry = data['entries'][0]
-        else: # If it's a direct URL
-            data = await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(ydl_opts).extract_info(query_or_url, download=False))
-            entry = data
-
+        data = await bot.loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(ydl_opts).extract_info(query_or_url if query_or_url.startswith("http") else f"ytsearch:{query_or_url}", download=False))
+        entry = data.get('entries', [data])[0]
         audio_url = entry['url']
         title = entry.get('title', display_name)
-        bot.current_song_url = query_or_url # Store original query/url
-        # global duratis; duratis = entry.get('duration') # If needed
-
+        bot.current_song_url = entry.get('webpage_url', query_or_url)
     except Exception as e:
-        await ctx.send(f'**"{display_name}" için ses alınamadı/çalınamadı: {e}**')
-        # Manually trigger next song from queue if this fails
-        if voice_client.is_connected():
-            after_playing_callback(None, ctx, voice_client) # Pass None as error, current ctx and vc
+        await interaction.channel.send(f'**"{display_name}" için ses alınamadı/çalınamadı.** Hata: `{e}`', delete_after=15)
+        bot.loop.call_soon_threadsafe(after_playing_callback, e, interaction, voice_client)
         return
 
-    ffmpeg_options = {
-        'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-        'options': '-vn'
-    }
-
-    # Define the callback within play_audio or pass necessary context to a global one
-    def after_playing_callback(error, current_ctx, vc_client): # Added current_ctx and vc_client
-        if error:
-            print(f"Player error: {error}")
-            # bot.loop.create_task(current_ctx.send(f"Çalarken hata oluştu: {error}"))
-
-        next_song_coro = None
-        
-        is_spotify_playlist_active = hasattr(current_ctx, 'from_spotify_playlist') and current_ctx.from_spotify_playlist
-        
-        if bot.sarki_kuyrugu: # Check generic queue first or spotify queue?
-            next_tuple = bot.sarki_kuyrugu.pop(0)
-            next_ctx, next_query, next_sp = next_tuple if len(next_tuple) == 3 else (next_tuple[0], next_tuple[1], None)
-            
-            # Ensure the context for the next song is the one who queued it, or the original playlist starter
-            actual_next_ctx = next_ctx if next_ctx else current_ctx # Fallback to current_ctx if somehow None
-            
-            display_title = next_query
-            if next_sp: # If it was a Spotify item
-                 actual_next_ctx.from_spotify_playlist = True # Ensure flag is set for next song in playlist
-            else: # If it was a generic play item
-                 if hasattr(actual_next_ctx, 'from_spotify_playlist'):
-                    delattr(actual_next_ctx, 'from_spotify_playlist')
-
-
-            print(f"Queue: Playing next - {display_title}")
-            next_song_coro = play_audio(actual_next_ctx, next_query, display_title, sp_instance=next_sp)
-        else: # No more songs in any queue
-            print("Queue empty.")
-            if hasattr(current_ctx, 'from_spotify_playlist'): # Clear flag if playlist ended
-                delattr(current_ctx, 'from_spotify_playlist')
-            if vc_client and vc_client.is_connected():
-                 bot.loop.create_task(current_ctx.send("🎶 Müzik kuyruğu tamamlandı.",delete_after=10))
-                 bot.vc_idle_timer = asyncio.get_event_loop().time() # Start idle timer
-
-        if next_song_coro:
-            bot.loop.create_task(next_song_coro)
-        elif vc_client and vc_client.is_connected() and not vc_client.is_playing() and not bot.sarki_kuyrugu:
-            bot.vc_idle_timer = asyncio.get_event_loop().time()
-
-    if voice_client.is_playing() or voice_client.is_paused():
-        voice_client.stop()
+    if voice_client.is_playing() or voice_client.is_paused(): voice_client.stop()
 
     try:
-        voice_client.play(discord.FFmpegPCMAudio(audio_url, **ffmpeg_options), after=lambda e: after_playing_callback(e, ctx, voice_client))
-        log_channel = bot.get_channel(BOT_CHANNEL_ID)
-        await log_channel.send(f'🎶 Şimdi çalıyor: **{title}**')
-        bot.vc_idle_timer = float('inf') # Mark as active, disable idle timer
+        ffmpeg_options = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': '-vn'}
+        voice_client.play(discord.FFmpegPCMAudio(audio_url, **ffmpeg_options), after=lambda e: bot.loop.call_soon_threadsafe(after_playing_callback, e, interaction, voice_client))
+        repeat_text = f" ({bot.now_playing['repeats_left']} kez)" if bot.now_playing.get('repeats_left', 1) > 1 else ""
+        await interaction.channel.send(f'🎶 Şimdi çalıyor: **{title}**{repeat_text}')
+        bot.vc_idle_timer = float('inf')
     except Exception as e:
-        await ctx.send(f"Müzik çalınırken hata: {e}")
-        after_playing_callback(e, ctx, voice_client) # Try to play next if current fails
+        await interaction.channel.send(f"Müzik çalınırken hata: {e}")
+        bot.loop.call_soon_threadsafe(after_playing_callback, e, interaction, voice_client)
 
+@bot.tree.command(name='play', description="Bir şarkıyı çalar veya kuyruğa ekler.")
+@app_commands.describe(query="Şarkı adı veya YouTube/Spotify linki", repeats="Şarkının kaç kez tekrarlanacağı (1-20)")
+async def play(interaction: discord.Interaction, query: str, repeats: app_commands.Range[int, 1, 20] = 1):
+    if not interaction.user.voice: return await interaction.response.send_message("**Bu komutu kullanmak için bir ses kanalında olmalısınız.**", ephemeral=True)
+    await interaction.response.defer()
 
-@bot.command(name='play')
+    is_playing = interaction.guild.voice_client and (interaction.guild.voice_client.is_playing() or bot.now_playing)
+    display_name = query
 
-async def play(ctx, *, query: str):
-    log_channel = bot.get_channel(BOT_CHANNEL_ID)
-    if not ctx.author.voice:
-        await ctx.send("**Bir ses kanalında olmalısınız.**")
-        return
-
-    # If a Spotify playlist was active and user does !play, treat as new generic queue
-    if hasattr(ctx, 'from_spotify_playlist'):
-        delattr(ctx, 'from_spotify_playlist')
-
-
-    if ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused() or bot.sarki_kuyrugu):
-        bot.sarki_kuyrugu.append((ctx, query, None)) # Add to generic queue (ctx, query, no_sp_instance)
-        await log_channel.send(f'🎵 Kuyruğa eklendi: **{query}**')
+    if is_playing or bot.sarki_kuyrugu:
+        queue_item = {'interaction': interaction, 'query': query, 'sp': None, 'repeat': repeats}
+        bot.sarki_kuyrugu.append(queue_item)
+        repeat_text = f" ({repeats} kez)" if repeats > 1 else ""
+        await interaction.followup.send(f'🎵 Kuyruğa eklendi: **{display_name}**{repeat_text}')
     else:
-        await play_audio(ctx, query, query) # query is also display_name here
+        await interaction.followup.send(f"🔎 **{display_name}** aranıyor...")
+        await play_audio(interaction, query, display_name, repeat_count=repeats)
 
-@bot.command(name='playlist')
-async def playlist_command(ctx, *, playlist_name: str): # Renamed to avoid conflict
-    user_id = ctx.author.id
-    if user_id not in user_spotify_tokens:
-        await ctx.send(f"{ctx.author.mention}, önce `!spotify_login` komutu ile Spotify hesabını bağlamalısın.")
-        return
+@bot.tree.command(name='stop', description="Müziği durdurur, kuyruğu temizler ve kanaldan ayrılır.")
+async def stop(interaction: discord.Interaction):
+    if not interaction.user.voice: return await interaction.response.send_message("**Bir ses kanalında olmalısınız.**", ephemeral=True)
+    vc = interaction.guild.voice_client
+    if not vc: return await interaction.response.send_message('Bot şu anda bir ses kanalında değil.', ephemeral=True)
+    bot.sarki_kuyrugu.clear()
+    bot.now_playing = {}
+    await vc.disconnect()
+    await interaction.response.send_message('⏹️ Müzik durduruldu, kuyruk temizlendi ve bot kanaldan ayrıldı.')
 
-    if not ctx.author.voice:
-        await ctx.send("**Bu komutu kullanmak için bir ses kanalında olmalısınız.**")
-        return
+@bot.tree.command(name='skip', description="Mevcut şarkıyı veya belirtilen sayıda şarkıyı atlar.")
+@app_commands.describe(count="Atlanacak şarkı sayısı (varsayılan: 1)")
+async def skip(interaction: discord.Interaction, count: app_commands.Range[int, 1, 50] = 1):
+    if not interaction.user.voice: return await interaction.response.send_message("**Bir ses kanalında olmalısınız.**", ephemeral=True)
+    vc = interaction.guild.voice_client
+    if not vc or not (vc.is_playing() or vc.is_paused()): return await interaction.response.send_message('↪️ Şu anda çalan bir şarkı yok.', ephemeral=True)
 
-    token_info = user_spotify_tokens[user_id]
+    skipped_count = 1
+    if count > 1:
+        removed = min(count - 1, len(bot.sarki_kuyrugu))
+        bot.sarki_kuyrugu = bot.sarki_kuyrugu[removed:]
+        skipped_count += removed
+    
+    if bot.now_playing: bot.now_playing['repeats_left'] = 0
+    vc.stop()
+    await interaction.response.send_message(f"↪️ **{skipped_count}** şarkı atlandı.")
 
+@bot.tree.command(name='skipall', description="Bir şarkının tüm tekrarlarını atlar ve sıradakine geçer.")
+async def skipall(interaction: discord.Interaction):
+    if not interaction.user.voice: return await interaction.response.send_message("**Bir ses kanalında olmalısınız.**", ephemeral=True)
+    vc = interaction.guild.voice_client
+    if not vc or not (vc.is_playing() or vc.is_paused()) or not bot.now_playing: return await interaction.response.send_message('↪️ Şu anda tekrarlanan bir şarkı yok.', ephemeral=True)
+
+    await interaction.response.send_message(f"⏭️ **{bot.now_playing['display_name']}** şarkısının tüm tekrarları atlanıyor...")
+    if bot.now_playing: bot.now_playing['repeats_left'] = 0
+    vc.stop()
+
+@bot.tree.command(name='spotify_login', description="Spotify hesabınızı bota bağlamak için DM'den link yollar.")
+async def spotify_login(interaction: discord.Interaction):
+    auth_url = sp_oauth.get_authorize_url()
+    try:
+        await interaction.user.send(f"Lütfen Spotify hesabına erişim izni vermek için şu bağlantıyı ziyaret et:\n{auth_url}\n\nİzin verdikten sonra yönlendirileceğin URL'den (`code=...` kısmındaki) kodu kopyalayıp `/spotify_auth code:KOD` komutuyla bana gönder.")
+        await interaction.response.send_message(f"{interaction.user.mention}, DM kutunu kontrol et.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message("Sana DM gönderemiyorum. Sunucu ayarlarından DM'lere izin ver.", ephemeral=True)
+
+@bot.tree.command(name='spotify_auth', description="Spotify'dan aldığınız yetkilendirme kodunu girersiniz.")
+@app_commands.describe(code="Spotify'dan yönlendirilen URL'deki kod.")
+async def spotify_auth(interaction: discord.Interaction, code: str):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        token_info = sp_oauth.get_access_token(code.strip(), as_dict=True, check_cache=False)
+        user_spotify_tokens[interaction.user.id] = token_info
+        save_spotify_tokens(user_spotify_tokens)
+        await interaction.followup.send("Spotify hesabın başarıyla bağlandı! `/playlist` komutunu kullanabilirsin.")
+    except Exception as e:
+        await interaction.followup.send(f"Token alınırken hata oluştu: {e}")
+
+@bot.tree.command(name='playlist', description="Spotify'daki bir çalma listenizi oynatır.")
+@app_commands.describe(playlist_name="Oynatılacak çalma listesinin adı")
+async def playlist_command(interaction: discord.Interaction, playlist_name: str):
+    await interaction.response.defer()
+    if not interaction.user.voice: return await interaction.followup.send("Bu komutu kullanmak için bir ses kanalında olmalısınız.")
+    if interaction.user.id not in user_spotify_tokens: return await interaction.followup.send("Önce `/spotify_login` ile Spotify hesabını bağlamalısın.")
+
+    token_info = user_spotify_tokens[interaction.user.id]
     if sp_oauth.is_token_expired(token_info):
         try:
-            if 'refresh_token' not in token_info or not token_info['refresh_token']:
-                await ctx.send("Spotify token'ın yenilenemiyor (refresh token eksik). Lütfen `!spotify_login` ile tekrar bağlan.")
-                if user_id in user_spotify_tokens: del user_spotify_tokens[user_id]
-                save_spotify_tokens(user_spotify_tokens)
-                return
-            new_token_info = sp_oauth.refresh_access_token(token_info['refresh_token'])
-            user_spotify_tokens[user_id] = new_token_info
+            token_info = sp_oauth.refresh_access_token(token_info['refresh_token'])
+            user_spotify_tokens[interaction.user.id] = token_info
             save_spotify_tokens(user_spotify_tokens)
-            token_info = new_token_info
-        except spotipy.SpotifyOauthError as e:
-            await ctx.send(f"Spotify token'ın yenilenirken bir OAuth hatası oluştu: {e}. Lütfen `!spotify_login` ile tekrar bağlanmayı dene.")
-            if user_id in user_spotify_tokens: del user_spotify_tokens[user_id]
-            save_spotify_tokens(user_spotify_tokens)
-            return
         except Exception as e:
-            await ctx.send(f"Spotify token'ın yenilenirken genel bir hata oluştu: {e}.")
-            return
+            return await interaction.followup.send(f"Spotify token'ın yenilenemedi. `/spotify_login` ile tekrar bağlan. Hata: {e}")
 
     sp = spotipy.Spotify(auth=token_info['access_token'])
-    
-    # Clear existing queue and set Spotify playlist flag
-    bot.sarki_kuyrugu.clear()
-    ctx.from_spotify_playlist = True # Flag for after_playing callback
-
     try:
-        playlists_data = sp.current_user_playlists()
-        target_playlist_id = None
-        target_playlist_title = ""
-
-        for p_item in playlists_data['items']:
-            if p_item['name'].lower() == playlist_name.lower():
-                target_playlist_id = p_item['id']
-                target_playlist_title = p_item['name']
-                break
-
-        if not target_playlist_id:
-            await ctx.send(f"**'{playlist_name}' adında bir çalma listesi Spotify hesabında bulunamadı.**")
-            if hasattr(ctx, 'from_spotify_playlist'): delattr(ctx, 'from_spotify_playlist') # Clear flag
-            return
-
-        msg = await ctx.send(f"🎵 **{target_playlist_title}** çalma listesi yükleniyor...")
-
-        items_fetched = 0
-        offset = 0
-        limit = 50 # Spotify API limit per request for playlist items
-
-        while True:
-            tracks_page = sp.playlist_items(target_playlist_id, limit=limit, offset=offset)
-            if not tracks_page['items']:
-                break
-            
-            for item in tracks_page['items']:
-                track = item.get('track')
-                if track and track.get('name') and track.get('artists'):
-                    artist_name = track['artists'][0]['name']
-                    song_query_for_yt = f"{track['name']} {artist_name}"
-                    # Store ctx of the user who initiated playlist, song_query, and their sp_instance
-                    bot.sarki_kuyrugu.append((ctx, song_query_for_yt, sp)) 
-                    items_fetched += 1
-            
-            if tracks_page['next']:
-                offset += limit
-            else:
-                break # No more pages
-
-        if not bot.sarki_kuyrugu:
-            await msg.edit(content=f"**'{target_playlist_title}' çalma listesi boş veya şarkılar alınamadı.**")
-            if hasattr(ctx, 'from_spotify_playlist'): delattr(ctx, 'from_spotify_playlist')
-            return
+        playlists = sp.current_user_playlists()
+        target_playlist = next((p for p in playlists['items'] if p['name'].lower() == playlist_name.lower()), None)
+        if not target_playlist: return await interaction.followup.send(f"**'{playlist_name}'** adında bir çalma listesi bulunamadı.")
         
-        await msg.edit(content=f"**{target_playlist_title}** çalma listesinden {items_fetched} şarkı kuyruğa eklendi. İlk şarkı çalınıyor...")
-        
-        # Pop the first song and play it
-        first_song_ctx, first_song_query, first_song_sp = bot.sarki_kuyrugu.pop(0)
-        await play_audio(first_song_ctx, first_song_query, first_song_query, sp_instance=first_song_sp)
-
-    except spotipy.exceptions.SpotifyException as e:
-        await ctx.send(f"Spotify API ile iletişimde hata: {e}")
-        if e.http_status == 401:
-            await ctx.send("Spotify yetkiniz geçersiz. `!spotify_login` ile tekrar bağlanın.")
-            if user_id in user_spotify_tokens: del user_spotify_tokens[user_id]
-            save_spotify_tokens(user_spotify_tokens)
-        bot.sarki_kuyrugu.clear()
-        if hasattr(ctx, 'from_spotify_playlist'): delattr(ctx, 'from_spotify_playlist')
-    except Exception as e:
-        await ctx.send(f"Çalma listesi işlenirken bir hata oluştu: {str(e)}")
-        bot.sarki_kuyrugu.clear()
-        if hasattr(ctx, 'from_spotify_playlist'): delattr(ctx, 'from_spotify_playlist')
-        print(f"Error in playlist command: {e}")
-
-
-@bot.command(name='stop')
-async def stop(ctx):
-    if not ctx.author.voice:
-        await ctx.send("**Bir ses kanalında olmalısınız.**")
-        return
-    if ctx.voice_client is None:
-        await ctx.send('Bot şu anda bir ses kanalında değil.')
-        return
-
-    bot.sarki_kuyrugu.clear()
-    if hasattr(ctx, 'from_spotify_playlist'):
-        delattr(ctx, 'from_spotify_playlist')
-    
-    ctx.voice_client.stop()
-    await ctx.voice_client.disconnect()
-    await ctx.send('⏹️ Müzik durduruldu, kuyruk temizlendi ve bot ses kanalından ayrıldı.')
-    bot.vc_idle_timer = asyncio.get_event_loop().time()
-
-@bot.command(name='skip')
-async def skip(ctx):
-    if not ctx.author.voice:
-        await ctx.send("**Bir ses kanalında olmalısınız.**")
-        return
-    if ctx.voice_client is None or not (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
-        await ctx.send('↪️ Şu anda çalan bir şarkı yok veya bot bir kanalda değil.')
-        return
-
-    await ctx.send("↪️ Şarkı atlanıyor...")
-    ctx.voice_client.stop() # This will trigger the 'after_playing_callback'
-
-
-# --- AI and Other Commands ---
-def generate_text_google(prompt_text):
-    if not GENAI_API_KEY or GENAI_API_KEY == 'YOUR_GOOGLE_AI_API_KEY_HERE':
-        return "Google AI API anahtarı ayarlanmamış."
-    try:
-        model = genai_google.GenerativeModel('gemini-1.5-flash-latest') # Using a common, recent model
-        response = model.generate_content(prompt_text)
-        return response.text
-    except Exception as e:
-        print(f"Error with Google GenAI: {e}")
-        if "API_KEY_INVALID" in str(e) or "permission" in str(e).lower() or "denied" in str(e).lower():
-             return "Google AI API anahtarı geçersiz veya yetkilendirme sorunu var."
-        if "billing" in str(e).lower():
-            return "Google Cloud projenizde faturalandırma etkinleştirilmemiş olabilir veya kotanız dolmuş olabilir."
-        return f"Google AI ile metin oluşturulurken bir hata oluştu: {type(e).__name__}"
-
-@bot.command(name='quant') # Original name from help
-async def quant_command(ctx, *, question: str):
-    async with ctx.typing(): # Show "Bot is typing..."
-        try:
-            generated_text = await bot.loop.run_in_executor(None, generate_text_google, question)
-            if len(generated_text) > 1990: # Discord char limit is 2000
-                parts = [generated_text[i:i+1990] for i in range(0, len(generated_text), 1990)]
-                for part in parts:
-                    await ctx.send(part)
-            else:
-                await ctx.send(generated_text)
-        except Exception as e:
-            await ctx.send(f"Quant komutunda bir hata oluştu: {str(e)}")
-
-def generate_image_hf(prompt): # Renamed to be specific
-    if not HF_TOKEN or HF_TOKEN == 'YOUR_HUGGINGFACE_TOKEN_HERE':
-        raise Exception("HuggingFace API anahtarı ayarlanmamış.")
-    
-    model_name = "stabilityai/stable-diffusion-xl-base-1.0" # A common, reliable model
-    # model_name = "black-forest-labs/FLUX.1-dev" # Original, can be slow or have specific needs
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-    payload = {"inputs": prompt, "options": {"wait_for_model": True}} # wait_for_model can help if model is loading
-
-    url = f"https://api-inference.huggingface.co/models/{model_name}"
-    
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=120) # Timeout of 2 mins
-        response.raise_for_status()
-        return response.content
-    except requests.exceptions.Timeout:
-        raise Exception("Resim oluşturma zaman aşımına uğradı. Model meşgul olabilir veya yükleniyor olabilir.")
-    except requests.RequestException as e:
-        error_content = "No response content"
-        status_code = "N/A"
-        if e.response is not None:
-            status_code = e.response.status_code
-            try:
-                error_content = e.response.json()
-                error_msg = error_content.get("error", str(e))
-                if isinstance(error_msg, list): error_msg = ", ".join(error_msg)
-                if "is currently loading" in str(error_msg).lower() or "estimated_time" in str(error_content).lower():
-                     estimated_time = error_content.get("estimated_time", "bilinmiyor")
-                     raise Exception(f"Model ({model_name}) şu anda yükleniyor (tahmini süre: {estimated_time}s), lütfen biraz sonra tekrar deneyin.")
-            except json.JSONDecodeError:
-                error_msg = e.response.text
+        tracks = sp.playlist_items(target_playlist['id'])['items']
+        playlist_songs = [{'interaction': interaction, 'query': f"{item['track']['name']} {item['track']['artists'][0]['name']}", 'sp': sp, 'repeat': 1} for item in tracks if item.get('track')]
+        if not playlist_songs: return await interaction.followup.send("Çalma listesi boş veya şarkılar okunamadı.")
+            
+        vc = interaction.guild.voice_client
+        if vc and (vc.is_playing() or bot.now_playing):
+            bot.sarki_kuyrugu.extend(playlist_songs)
+            await interaction.followup.send(f"✅ **{target_playlist['name']}** çalma listesinden {len(playlist_songs)} şarkı kuyruğa eklendi!")
         else:
-            error_msg = str(e)
-        raise Exception(f"HuggingFace API hatası ({status_code}): {error_msg}")
-
-
-@bot.command(name='resim')
-async def resim(ctx, *, prompt: str = None):
-    if not prompt:
-        await ctx.send("Lütfen bir prompt girin. Örneğin: `!resim gün batımında bir kedi`")
-        return
-
-    msg = await ctx.send(f"🎨 `{prompt}` için resim oluşturuluyor, bu biraz zaman alabilir...")
-    try:
-        image_data = await bot.loop.run_in_executor(None, generate_image_hf, prompt)
-        image_bytes = BytesIO(image_data)
-        await msg.delete()
-        await ctx.send(
-            content=f"İşte '{prompt}' için resminiz:",
-            file=discord.File(fp=image_bytes, filename='generated_image.png')
-        )
+            bot.sarki_kuyrugu.extend(playlist_songs)
+            await interaction.followup.send(f"🎵 **{target_playlist['name']}** çalma listesinden {len(playlist_songs)} şarkı eklendi. Şimdi başlıyor...")
+            first_song = bot.sarki_kuyrugu.pop(0)
+            await play_audio(first_song['interaction'], first_song['query'], first_song['query'], sp_instance=first_song.get('sp'))
     except Exception as e:
-        await msg.edit(content=f'🖼️ Resim oluşturulurken hata oluştu: {e}')
+        await interaction.followup.send(f"Playlist işlenirken bir hata oluştu: {e}")
 
 
-@bot.command(name='steam')
-async def steam(ctx, *, game_query: str):
+@bot.tree.command(name='quant', description="Yapay zeka ile sohbet edin.")
+@app_commands.describe(question="Sormak istediğiniz soru")
+async def quant_command(interaction: discord.Interaction, question: str):
+    await interaction.response.defer()
+    if not GENAI_API_KEY: return await interaction.followup.send("Google AI API anahtarı ayarlanmamış.", ephemeral=True)
+    try:
+        model = genai_google.GenerativeModel('gemini-1.5-flash-latest')
+        response = await bot.loop.run_in_executor(None, lambda: model.generate_content(question))
+        text = response.text
+        if len(text) > 1990: await interaction.followup.send(text[:1990] + "...")
+        else: await interaction.followup.send(text)
+    except Exception as e: await interaction.followup.send(f"Google AI hatası: {e}")
+
+@bot.tree.command(name='resim', description="Yapay zeka ile resim oluşturun.")
+@app_commands.describe(prompt="Resim için açıklama (İngilizce önerilir)")
+async def resim(interaction: discord.Interaction, prompt: str):
+    await interaction.response.defer()
+    if not HF_TOKEN: return await interaction.followup.send("HuggingFace API anahtarı ayarlanmamış.", ephemeral=True)
+    API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    try:
+        response = await bot.loop.run_in_executor(None, lambda: requests.post(API_URL, headers=headers, json={"inputs": prompt}, timeout=120))
+        response.raise_for_status()
+        await interaction.followup.send(content=f"🎨 İşte '**{prompt}**' için resminiz:", file=discord.File(fp=BytesIO(response.content), filename='generated_image.png'))
+    except Exception as e: await interaction.followup.send(f'🖼️ Resim oluşturulurken hata oluştu: {e}')
+
+@bot.tree.command(name='steam', description="Bir oyunun Steam fiyatını gösterir.")
+@app_commands.describe(game_query="Aranacak oyunun adı")
+async def steam(interaction: discord.Interaction, game_query: str):
+    await interaction.response.defer()
     search_url = f'https://store.steampowered.com/search/?term={url_quote(game_query)}'
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-               'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7'} # Request Turkish page if available
-
+    headers = {'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'tr-TR,tr;q=0.9'}
     try:
-        async with ctx.typing():
-            response = await bot.loop.run_in_executor(None, lambda: requests.get(search_url, headers=headers, timeout=10))
-            response.raise_for_status()
-            soup = BeautifulSoup(response.content, 'html.parser')
+        response = await bot.loop.run_in_executor(None, lambda: requests.get(search_url, headers=headers, timeout=10))
+        soup = BeautifulSoup(response.content, 'html.parser')
+        game_row = soup.find('a', class_='search_result_row')
+        if not game_row: return await interaction.followup.send(f"'{game_query}' için Steam'de oyun bulunamadı.")
+        
+        embed = discord.Embed(title=f"Steam Fiyatı: {game_row.find('span', class_='title').text}", url=game_row['href'], color=discord.Color.blue())
+        embed.add_field(name="Fiyat", value=game_row.find('div', class_='search_price').text.strip() or "Fiyat Belirtilmemiş")
+        embed.set_thumbnail(url=game_row.find('img')['src'])
+        await interaction.followup.send(embed=embed)
+    except Exception as e: await interaction.followup.send(f"Steam fiyatı alınırken bir hata oluştu: {e}")
 
-            game_row = soup.find('a', class_='search_result_row')
-            if not game_row or not game_row.get('href'):
-                await ctx.send(f"'{game_query}' için Steam'de oyun bulunamadı.")
-                return
+@bot.tree.command(name='translate', description="Metni belirtilen dile çevirir.")
+@app_commands.describe(text="Çevrilecek metin", target_language="Hedef dil kodu (tr, en) veya adı (turkish, english)")
+async def translate_command(interaction: discord.Interaction, text: str, target_language: str):
+    await interaction.response.defer()
+    try:
+        lang_code = next((code for code, name in LANGUAGES.items() if target_language.lower() in [code, name.lower()]), None)
+        if not lang_code: return await interaction.followup.send(f"Geçersiz hedef dil: '{target_language}'. `/diller` ile listeye bakabilirsiniz.")
+        
+        translator = Translator()
+        result = await bot.loop.run_in_executor(None, lambda: translator.translate(text, dest=lang_code))
+        
+        embed = discord.Embed(title="Çeviri Sonucu", color=discord.Color.green())
+        embed.add_field(name=f"Kaynak Metin ({LANGUAGES.get(result.src, result.src).title()})", value=f"```{text}```", inline=False)
+        embed.add_field(name=f"Çevrilen Metin ({LANGUAGES.get(result.dest, result.dest).title()})", value=f"```{result.text}```", inline=False)
+        await interaction.followup.send(embed=embed)
+    except Exception as e: await interaction.followup.send(f"Çeviri sırasında bir hata oluştu: {e}")
 
-            game_link = game_row['href']
-            if "agecheck" in game_link: # Handle age check pages
-                 await ctx.send(f"Bu oyun için yaş doğrulaması gerekiyor. Lütfen Steam'de manuel olarak kontrol edin: <{game_link}>")
-                 return
+@bot.tree.command(name="diller", description="Çeviri için kullanılabilir dillerin listesini gösterir.")
+async def list_languages(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    lang_list = [f"`{code}`: {name.capitalize()}" for code, name in LANGUAGES.items()]
+    description = "\n".join(lang_list)
+    messages = [description[i:i+1990] for i in range(0, len(description), 1990)]
+    for msg in messages:
+        await interaction.followup.send(f"**Kullanılabilir Diller (Kod: Adı):**\n{msg}", ephemeral=True)
 
-            game_page_response = await bot.loop.run_in_executor(None, lambda: requests.get(game_link, headers=headers, timeout=10))
-            game_page_response.raise_for_status()
-            game_page_soup = BeautifulSoup(game_page_response.content, 'html.parser')
+def _generate_game_data(rows=10, cols=10):
+    item_pairs = [('49', '94'), ('O', 'Q'), ('PEN', 'PAN'), ('8', '6'), ('S', '5'), ('l', 'I')]
+    base, target = random.choice(item_pairs)
+    answer = (random.randint(1, rows), random.randint(1, cols))
+    grid = [[(target if (r, c) == (answer[0], answer[1]) else base) for c in range(1, cols + 1)] for r in range(1, rows + 1)]
+    return {"grid": grid, "answer": answer, "target": target}
 
-            price_str = "Fiyat bilgisi bulunamadı."
-            title_div = game_page_soup.find('div', id='appHubAppName')
-            actual_game_title = title_div.text.strip() if title_div else game_query
+@bot.tree.command(name='game', description="Farklı olanı bulma oyununu başlatır.")
+async def game(interaction: discord.Interaction):
+    game_data = _generate_game_data()
+    max_len = max(len(str(item)) for row in game_data['grid'] for item in row) + 2
+    grid_str = "```\n" + "    " + "".join([str(i).ljust(max_len) for i in range(1, 11)]) + "\n" + "   " + "-" * (10 * max_len) + "\n"
+    for i, row in enumerate(game_data['grid']):
+        grid_str += f"{(i+1):<2} | " + "".join([str(item).ljust(max_len) for item in row]) + "\n"
+    grid_str += "```"
+    bot.active_games[interaction.channel_id] = game_data
+    embed = discord.Embed(title="🎲 Farklı Olanı Bul!", description=f"Aşağıdaki tabloda farklı olan **{game_data['target']}** öğesinin yerini (`satır`, `sütun`) bul.\nCevabını `/guess` ile gönder.\n{grid_str}", color=discord.Color.gold())
+    embed.set_footer(text="Örnek: /guess row: 4 col: 2")
+    await interaction.response.send_message(embed=embed)
 
-            price_area = game_page_soup.find('div', class_='game_purchase_action')
-            if price_area:
-                price_div = price_area.find('div', class_='game_purchase_price') # Original price
-                if not price_div: price_div = price_area.find('div', class_='discount_final_price') # Discounted price
+@bot.tree.command(name='guess', description="Farklı olanı bulma oyununda tahminini gönderir.")
+@app_commands.describe(row="Hedefin bulunduğu satır numarası", col="Hedefin bulunduğu sütun numarası")
+async def guess(interaction: discord.Interaction, row: app_commands.Range[int, 1, 10], col: app_commands.Range[int, 1, 10]):
+    if not (game_data := bot.active_games.get(interaction.channel_id)): return await interaction.response.send_message("Bu kanalda aktif bir oyun yok.", ephemeral=True)
+    if (row, col) == game_data["answer"]:
+        del bot.active_games[interaction.channel_id]
+        await interaction.response.send_message(f"🎉 Tebrikler {interaction.user.mention}! Doğru cevap. Oyunu kazandın!")
+    else: await interaction.response.send_message(f"Maalesef yanlış cevap, {interaction.user.mention}. Tekrar dene!", ephemeral=True)
 
-                if price_div:
-                    price_str = price_div.text.strip()
-                elif "free to play" in price_area.text.lower() or "ücretsiz oyna" in price_area.text.lower() or "free" == price_area.text.lower().strip():
-                    price_str = "Ücretsiz"
+@bot.tree.command(name='gsr', description="Google'da arama yapar.")
+async def gsr(interaction: discord.Interaction, query: str): await interaction.response.send_message(f'https://www.google.com/search?q={url_quote(query)}')
+
+@bot.tree.command(name='ytsr', description="YouTube'da arama yapar.")
+async def ytsr(interaction: discord.Interaction, query: str): await interaction.response.send_message(f'https://www.youtube.com/results?search_query={url_quote(query)}')
+
+@bot.tree.command(name='havadurumu', description="Belirtilen şehrin hava durumunu gösterir.")
+async def havadurumu(interaction: discord.Interaction, city: str): await interaction.response.send_message(f'https://www.google.com/search?q={url_quote(city + " hava durumu")}')
+
+@bot.tree.command(name="8ball", description="Sihirli 8 topa bir evet/hayır sorusu sorun.")
+async def eight_ball(interaction: discord.Interaction, question: str):
+    responses = ["Kesinlikle evet.", "Görünüşe göre iyi.", "Şüphesiz.", "Evet, kesinlikle.", "Buna güvenebilirsin.", "Cevabım hayır.", "Kaynaklarım hayır diyor.", "Pek iyi görünmüyor.", "Çok şüpheli.", "Bence hayır."]
+    await interaction.response.send_message(f"🎱 Soru: `{question}`\nCevap: **{random.choice(responses)}**")
+
+@bot.tree.command(name="roll", description="Belirtilen aralıkta bir zar atar (varsayılan: 1-6).")
+async def roll(interaction: discord.Interaction, max_number: app_commands.Range[int, 2, 1000] = 6): await interaction.response.send_message(f"🎲 Zar atıldı ve sonuç: **{random.randint(1, max_number)}** (1-{max_number})")
+
+@bot.tree.command(name="flip", description="Yazı tura atar.")
+async def flip(interaction: discord.Interaction): await interaction.response.send_message(f"🪙 Para havaya atıldı ve sonuç: **{random.choice(['Yazı', 'Tura'])}**!")
+
+@bot.tree.command(name="poll", description="Basit bir anket oluşturur.")
+@app_commands.describe(question="Anket sorusu", options="Seçenekleri virgülle ayırarak yazın (en fazla 4).")
+async def poll(interaction: discord.Interaction, question: str, options: str):
+    parsed_options = [opt.strip() for opt in options.split(',')][:4]
+    if len(parsed_options) < 2: return await interaction.response.send_message("Lütfen en az 2 seçenek belirtin.", ephemeral=True)
+
+    emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+    description = [f"{emojis[i]} {option}" for i, option in enumerate(parsed_options)]
+    
+    embed = discord.Embed(title=f"📊 Anket: {question}", description="\n".join(description), color=discord.Color.dark_aqua())
+    embed.set_footer(text=f"Anketi başlatan: {interaction.user.display_name}")
+    
+    await interaction.response.send_message(embed=embed)
+    message = await interaction.original_response()
+    for i in range(len(parsed_options)): await message.add_reaction(emojis[i])
+class BattleView(ui.View):
+    def __init__(self, challenger: discord.Member, opponent: discord.Member, bet: int):
+        super().__init__(timeout=120.0)
+        self.challenger = challenger
+        self.opponent = opponent
+        self.bet = bet
+        self.message = None
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            await self.message.edit(content=f"Savaş isteği zaman aşımına uğradı. {self.opponent.mention} cevap vermedi.", view=self)
+        if self.challenger.id in bot.active_battles:
+             del bot.active_battles[self.challenger.id]
+
+
+    @ui.button(label="Kabul Et", style=ButtonStyle.success)
+    async def accept(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.opponent.id:
+            return await interaction.response.send_message("Bu savaş daveti sana gönderilmedi.", ephemeral=True)
+
+        guild_id = str(interaction.guild.id)
+        opponent_id = str(self.opponent.id)
+        challenger_id = str(self.challenger.id)
+        
+        opponent_balance = bot.economy.get(guild_id, {}).get(opponent_id, {}).get("balance", 0)
+        if opponent_balance < self.bet:
+            return await interaction.response.send_message(f"Bu savaşı kabul etmek için yeterli bakiyen yok! Gerekli: **{self.bet} Quant**.", ephemeral=True)
+
+        for item in self.children:
+            item.disabled = True
+
+        winner = random.choice([self.challenger, self.opponent])
+        loser = self.opponent if winner.id == self.challenger.id else self.challenger
+
+        bot.economy[guild_id][str(winner.id)]["balance"] += self.bet
+        bot.economy[guild_id][str(loser.id)]["balance"] -= self.bet
+        save_json(ECONOMY_FILE, bot.economy)
+
+        await interaction.response.edit_message(content=f"⚔️ Savaş başladı! ⚔️\n\n**{self.challenger.display_name}** vs **{self.opponent.display_name}**\n\nKazanan: **{winner.mention}**! 🎉\n**{self.bet} Quant** kazandı!", view=self)
+        if self.challenger.id in bot.active_battles:
+             del bot.active_battles[self.challenger.id]
+
+    @ui.button(label="Reddet", style=ButtonStyle.danger)
+    async def decline(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.opponent.id and interaction.user.id != self.challenger.id:
+            return await interaction.response.send_message("Bu savaşı yönetemezsin.", ephemeral=True)
             
-            embed = discord.Embed(title=f"Steam Fiyatı: {actual_game_title}", color=discord.Color.blue(), url=game_link)
-            embed.add_field(name="Fiyat", value=price_str, inline=False)
-            game_img_tag = game_row.find('img')
-            if game_img_tag and game_img_tag.get('src'):
-                embed.set_thumbnail(url=game_img_tag['src'])
-            await ctx.send(embed=embed)
+        for item in self.children:
+            item.disabled = True
+            
+        reason = "reddedildi" if interaction.user.id == self.opponent.id else "iptal edildi"
+        await interaction.response.edit_message(content=f"Savaş isteği {interaction.user.mention} tarafından {reason}.", view=self)
+        if self.challenger.id in bot.active_battles:
+             del bot.active_battles[self.challenger.id]
 
-    except requests.exceptions.RequestException as e:
-        await ctx.send(f"Steam'den bilgi alınırken bir ağ hatası oluştu: {e}")
-    except Exception as e:
-        await ctx.send(f"Steam fiyatı alınırken bir hata oluştu: {e}")
-        print(f"Steam command error: {e} ({type(e)})")
+@bot.tree.command(name="battle", description="Başka bir üyeye karşı bahisli savaş yap.")
+@app_commands.describe(opponent="Savaşmak istediğin üye", bet="Bahis miktarı")
+async def battle(interaction: discord.Interaction, opponent: discord.Member, bet: app_commands.Range[int, 1, None]):
+    if opponent.bot or opponent == interaction.user:
+        return await interaction.response.send_message("Kendinle veya bir botla savaşamazsın.", ephemeral=True)
+        
+    if interaction.user.id in bot.active_battles:
+        return await interaction.response.send_message("Zaten gönderilmiş bir savaş isteğin var.", ephemeral=True)
+
+    guild_id = str(interaction.guild.id)
+    challenger_id = str(interaction.user.id)
+    
+    bot.economy.setdefault(guild_id, {}).setdefault(challenger_id, {"balance": 0})
+    bot.economy[guild_id].setdefault(str(opponent.id), {"balance": 0})
+    
+    challenger_balance = bot.economy[guild_id][challenger_id].get("balance", 0)
+    if challenger_balance < bet:
+        return await interaction.response.send_message(f"Yetersiz bakiye! Bu savaşı başlatmak için **{bet} Quant**'a ihtiyacın var. Bakiyen: **{challenger_balance} Quant**.", ephemeral=True)
+
+    view = BattleView(challenger=interaction.user, opponent=opponent, bet=bet)
+    bot.active_battles[interaction.user.id] = True 
+    
+    message_content = f"Hey {opponent.mention}! {interaction.user.mention} sana **{bet} Quant** için savaş teklif ediyor. Ne dersin?"
+    await interaction.response.send_message(message_content, view=view)
+    view.message = await interaction.original_response()
+
+KART_DEGERLERI = {'2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10, 'J': 10, 'Q': 10, 'K': 10, 'A': 11}
+KART_TURU = ['♠️', '♥️', '♦️', '♣️']
+
+def deste_olustur():
+    return [f"{deger}{tur}" for tur in KART_TURU for deger in KART_DEGERLERI]
+
+def el_degeri_hesapla(el):
+    deger = sum(KART_DEGERLERI[kart[:-2]] for kart in el)
+    as_sayisi = el.count('A♠️') + el.count('A♥️') + el.count('A♦️') + el.count('A♣️')
+    while deger > 21 and as_sayisi:
+        deger -= 10
+        as_sayisi -= 1
+    return deger
+
+class BlackjackView(ui.View):
+    def __init__(self, interaction: discord.Interaction, bet: int):
+        super().__init__(timeout=180.0)
+        self.interaction = interaction
+        self.bet = bet
+        self.deste = deste_olustur()
+        random.shuffle(self.deste)
+        self.oyuncu_eli = [self.deste.pop(), self.deste.pop()]
+        self.krupiye_eli = [self.deste.pop(), self.deste.pop()]
+        self.message = None
+
+    async def oyun_sonu(self, interaction: discord.Interaction, sonuc: str, kazanc: int):
+        for item in self.children:
+            item.disabled = True
+        
+        guild_id = str(interaction.guild.id)
+        user_id = str(interaction.user.id)
+        
+        bot.economy[guild_id][user_id]["balance"] += kazanc
+        save_json(ECONOMY_FILE, bot.economy)
+        
+        embed = await self.embed_olustur(oyun_sonu=True)
+        embed.title = f"Blackjack Sonucu: {sonuc}"
+        if kazanc > 0:
+            embed.description = f"Tebrikler! **{kazanc} Quant** kazandın."
+        elif kazanc < 0:
+            embed.description = f"Maalesef! **{-kazanc} Quant** kaybettin."
+        else:
+            embed.description = "Berabere! Bahsin iade edildi."
+            
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+        if interaction.user.id in bot.blackjack_games:
+            del bot.blackjack_games[interaction.user.id]
+
+    async def embed_olustur(self, oyun_sonu=False):
+        oyuncu_degeri = el_degeri_hesapla(self.oyuncu_eli)
+        krupiye_gosterilen_el = f"{self.krupiye_eli[0]}  [ ? ]" if not oyun_sonu else "  ".join(self.krupiye_eli)
+        krupiye_degeri = el_degeri_hesapla(self.krupiye_eli)
+
+        embed = discord.Embed(title=f"Blackjack Masası | Bahis: {self.bet} Quant", color=discord.Color.green())
+        embed.add_field(name=f"{self.interaction.user.display_name}'in Eli ({oyuncu_degeri})", value="  ".join(self.oyuncu_eli), inline=False)
+        embed.add_field(name=f"Krupiyenin Eli ({el_degeri_hesapla([self.krupiye_eli[0]]) if not oyun_sonu else krupiye_degeri})", value=krupiye_gosterilen_el, inline=False)
+        embed.set_footer(text="Sıra sende!")
+        return embed
+
+    @ui.button(label="Kart Çek (Hit)", style=ButtonStyle.success)
+    async def hit(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("Bu senin oyunun değil!", ephemeral=True)
+            return
+            
+        self.oyuncu_eli.append(self.deste.pop())
+        oyuncu_degeri = el_degeri_hesapla(self.oyuncu_eli)
+        
+        if oyuncu_degeri > 21:
+            await self.oyun_sonu(interaction, "Kaybettin (Bust)!", -self.bet)
+        else:
+            embed = await self.embed_olustur()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    @ui.button(label="Dur (Stand)", style=ButtonStyle.danger)
+    async def stand(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("Bu senin oyunun değil!", ephemeral=True)
+            return
+            
+        krupiye_degeri = el_degeri_hesapla(self.krupiye_eli)
+        while krupiye_degeri < 17:
+            self.krupiye_eli.append(self.deste.pop())
+            krupiye_degeri = el_degeri_hesapla(self.krupiye_eli)
+
+        oyuncu_degeri = el_degeri_hesapla(self.oyuncu_eli)
+        
+        if krupiye_degeri > 21 or oyuncu_degeri > krupiye_degeri:
+            await self.oyun_sonu(interaction, "Kazandın!", self.bet)
+        elif krupiye_degeri > oyuncu_degeri:
+            await self.oyun_sonu(interaction, "Kaybettin!", -self.bet)
+        else:
+            await self.oyun_sonu(interaction, "Berabere (Push)", 0)
 
 
-# --- Search Commands ---
-@bot.command(name='gsr')
-async def gsearch(ctx, *, query: str):
-    url = f'https://www.google.com/search?q={url_quote(query)}'
-    await ctx.send(f'Google araması: <{url}>')
+@bot.tree.command(name="blackjack", description="Blackjack (21) oynayarak Quant kazan veya kaybet.")
+@app_commands.describe(bet="Oynamak istediğiniz Quant miktarı.")
+async def blackjack(interaction: discord.Interaction, bet: app_commands.Range[int, 10, None]):
+    guild_id = str(interaction.guild.id)
+    user_id = str(interaction.user.id)
 
-@bot.command(name='ytsr')
-async def ytsr(ctx, *, query: str):
-    url = f'https://www.youtube.com/results?search_query={url_quote(query)}'
-    await ctx.send(f'YouTube araması: <{url}>')
+    if user_id in bot.blackjack_games:
+        return await interaction.response.send_message("Zaten devam eden bir Blackjack oyunun var.", ephemeral=True)
 
-@bot.command(name='havadurumu')
-async def havadurum(ctx, *, city: str):
-    url = f'https://www.google.com/search?q={url_quote(city + " hava durumu")}'
-    await ctx.send(f'{city} için hava durumu: <{url}>')
+    bot.economy.setdefault(guild_id, {}).setdefault(user_id, {"balance": 0})
+    user_balance = bot.economy[guild_id][user_id].get("balance", 0)
+
+    if user_balance < bet:
+        return await interaction.response.send_message(f"Yetersiz bakiye! Bu bahsi oynamak için **{bet} Quant**'a ihtiyacın var. Bakiyen: **{user_balance} Quant**.", ephemeral=True)
+
+    view = BlackjackView(interaction, bet)
+    bot.blackjack_games[user_id] = view
+
+    oyuncu_degeri = el_degeri_hesapla(view.oyuncu_eli)
+    if oyuncu_degeri == 21:
+        kazanc = int(bet * 1.5) 
+        await view.oyun_sonu(interaction, "BLACKJACK!", kazanc)
+    else:
+        embed = await view.embed_olustur()
+        await interaction.response.send_message(embed=embed, view=view)
+
+@bot.tree.command(name='ping', description="Botun gecikme süresini ölçer.")
+async def ping(interaction: discord.Interaction): await interaction.response.send_message(f'Pong! {round(bot.latency * 1000)}ms')
+
+@bot.tree.command(name='saat', description="Geçerli saati gösterir.")
+async def saat(interaction: discord.Interaction): await interaction.response.send_message(f'🕒 Geçerli saat (UTC): {datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S")}')
+
+@bot.tree.command(name="userinfo", description="Bir üye hakkında detaylı bilgi gösterir.")
+async def userinfo(interaction: discord.Interaction, member: discord.Member = None):
+    member = member or interaction.user
+    embed = discord.Embed(title=f"Kullanıcı Bilgisi: {member.display_name}", color=member.color or discord.Color.default(), timestamp=datetime.datetime.now())
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="ID", value=f"`{member.id}`")
+    embed.add_field(name="Durum", value=f"`{str(member.status).title()}`")
+    embed.add_field(name="En Yüksek Rol", value=member.top_role.mention)
+    embed.add_field(name="Sunucuya Katılma", value=f"<t:{int(member.joined_at.timestamp())}:D>", inline=False)
+    embed.add_field(name="Discord'a Katılma", value=f"<t:{int(member.created_at.timestamp())}:D>", inline=False)
+    roles = [role.mention for role in sorted(member.roles, key=lambda r: r.position, reverse=True) if role.name != "@everyone"]
+    if roles: embed.add_field(name=f"Roller [{len(roles)}]", value=" ".join(roles), inline=False)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="serverinfo", description="Bu sunucu hakkında detaylı bilgi gösterir.")
+async def serverinfo(interaction: discord.Interaction):
+    guild = interaction.guild
+    embed = discord.Embed(title=f"Sunucu Bilgisi: {guild.name}", color=discord.Color.blue(), timestamp=guild.created_at)
+    if guild.icon: embed.set_thumbnail(url=guild.icon.url)
+    if guild.banner: embed.set_image(url=guild.banner.url)
+    
+    embed.add_field(name="Sahip", value=guild.owner.mention, inline=True)
+    embed.add_field(name="ID", value=f"`{guild.id}`", inline=True)
+    embed.add_field(name="Üyeler", value=f"**{guild.member_count}** ({sum(1 for m in guild.members if not m.bot)} Kullanıcı, {sum(1 for m in guild.members if m.bot)} Bot)", inline=False)
+    embed.add_field(name="Kanallar", value=f"Metin: {len(guild.text_channels)}\nSes: {len(guild.voice_channels)}\nKategori: {len(guild.categories)}", inline=True)
+    embed.add_field(name="Roller", value=f"**{len(guild.roles)}**", inline=True)
+    embed.set_footer(text="Sunucu Oluşturulma Tarihi")
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="avatar", description="Bir üyenin profil resmini gösterir.")
+async def avatar(interaction: discord.Interaction, member: discord.Member = None):
+    member = member or interaction.user
+    embed = discord.Embed(title=f"{member.display_name} Avatarı", color=member.color)
+    embed.set_image(url=member.display_avatar.url)
+    await interaction.response.send_message(embed=embed)
 
 
-# --- Special Role Command & on_message ---
-@commands.has_permissions(administrator=True) # Restrict this powerful command
-@bot.command(name='6169323131123', hidden=True) # Example of a hidden command
-async def give_moderator_role_special(ctx, member: discord.Member):
-    moderator_role = discord.utils.get(ctx.guild.roles, name='Moderator')
-    if not moderator_role:
-        await ctx.send("Moderator rolü bulunamadı.", delete_after=10)
-        return
-    try:
-        # This part seems problematic: "Remove all permissions from the "Moderator" role"
-        # await moderator_role.edit(permissions=discord.Permissions.none()) # This would strip the role of all perms
-        # Usually you just assign the existing role.
-        await member.add_roles(moderator_role)
-        await ctx.send(f"{member.mention} kullanıcısına Moderator rolü verildi (gizli komut).", delete_after=5)
-    except discord.Forbidden:
-        await ctx.send("Rol verme yetkim yok.", delete_after=10)
-    finally:
-        await ctx.message.delete()
-
-
-
-
-
-# --- VC Idle Check Task ---
-@tasks.loop(seconds=30) # Check every 30 seconds
+@tasks.loop(seconds=30.0)
 async def check_vc_idle():
-    now = asyncio.get_event_loop().time()
-    idle_disconnect_timeout = 60 * 5  # 5 minutes
-
+    """Ses kanallarında boşta kalan botu kontrol eder ve atar."""
+    idle_disconnect_timeout = 300  
     for vc in bot.voice_clients:
-        if vc.is_connected():
-            if vc.is_playing() or bot.sarki_kuyrugu: # If playing or queue has songs
-                bot.vc_idle_timer = float('inf') # Mark as active
-                continue
-            
-            # If not playing and queue is empty
-            if len(vc.channel.members) <= 1: # Bot is alone
-                if bot.vc_idle_timer == float('inf'): # Was just playing, start timer now
-                    bot.vc_idle_timer = now
-                elif (now - bot.vc_idle_timer) > idle_disconnect_timeout:
+        if vc.is_connected() and not vc.is_playing() and not bot.sarki_kuyrugu:
+            real_members = [m for m in vc.channel.members if not m.bot]
+            if not real_members:
+                if (bot.loop.time() - bot.vc_idle_timer) > idle_disconnect_timeout:
                     await vc.disconnect()
-                    log_channel = bot.get_channel(LOG_CHANNEL_ID)
-                    if log_channel:
-                        await log_channel.send(f"🔊 Ses kanalından ({vc.channel.name}) {idle_disconnect_timeout//60} dakika boyunca yalnız olduğum için ayrıldım.")
-                    else:
-                        print(f"Disconnected from {vc.channel.name} due to being alone and idle.")
-                    bot.vc_idle_timer = now # Reset timer
-            else: # People are in channel, but bot is idle
-                 if bot.vc_idle_timer == float('inf'): # Was just playing, start timer
-                    bot.vc_idle_timer = now
-                 # Optional: could also disconnect if idle for too long even with users, but current logic is "alone and idle"
+            else: bot.vc_idle_timer = bot.loop.time()
+        else: bot.vc_idle_timer = bot.loop.time()
 
 
-# --- Help Command ---
-@bot.command(name='yardim', aliases=['help'])
-async def yardim_command(ctx):
-    title_art = pyfiglet.figlet_format("QUANT", font="slant")
-    guide_art = pyfiglet.figlet_format("Help Guide", font="mini")
-    
-    embed = discord.Embed(
-        title="🤖 Quant Bot Komutları",
-        description=f"```\n{title_art}\n{guide_art}\n```\nMerhaba! İşte kullanabileceğin komutlar:",
-        color=discord.Color.purple()
-    )
-    embed.add_field(name="🌐 Genel", value=
-        "`!ping` - Botun gecikme süresini gösterir.\n"
-        "`!saat` - Geçerli saati gösterir.\n"
-        "`!havadurumu <şehir>` - Belirtilen şehrin hava durumunu arar.\n"
-        "`!gsr <arama>` - Google'da arama yapar.\n"
-        "`!ytsr <arama>` - YouTube'da arama yapar.", inline=False)
-    
-    embed.add_field(name="✨ AI & Eğlence", value=
-        "`!quant <soru>` - Yapay zeka ile sohbet et.\n"
-        "`!resim <prompt>` - Yazdığınız propmt'a göre resim oluşturur.\n"
-        "`!steam <oyun_adı>` - Oyunun Steam fiyatını gösterir.\n"
-        "`!translate <metin> <hedef_dil_kodu>` - Metni belirtilen dile çevirir (örn: `!translate merhaba en`).\n"
-        "  Diğer adıyla `!çevir`. Kullanılabilir diller için `!diller`.", inline=False)
+@bot.tree.command(name='help', description="Botun tüm komutlarını kategorilere ayrılmış olarak listeler.")
+async def help_command(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    embed = discord.Embed(title="🤖 Quant Bot Komut Rehberi", description="Merhaba! İşte kullanabileceğin tüm komutlar:", color=discord.Color.purple())
+    embed.add_field(name="🛡️ Moderasyon", value="`/sil`, `/mute`, `/unmute`, `/warn`, `/warnings`, `/duyuru`", inline=False)
+    embed.add_field(name="🌟 Seviye & Ekonomi", value="`/rank`, `/leaderboard`, `/daily`, `/balance`, `/pay`", inline=False)
+    embed.add_field(name="🎵 Müzik", value="`/play`, `/stop`, `/skip`, `/skipall`, `/playlist`, `/spotify_login`, `/spotify_auth`", inline=False)
+    embed.add_field(name="✨ AI & Arama", value="`/quant`, `/resim`, `/steam`, `/gsr`, `/ytsr`, `/havadurumu`", inline=False)
+    embed.add_field(name="🎉 Eğlence & Oyun", value="`/8ball`, `/roll`, `/flip`, `/poll`, `/game`, `/guess`, `/blackjack`, `/battle`", inline=False)
+    embed.add_field(name="🛠️ Yardımcı & Bilgi", value="`/userinfo`, `/serverinfo`, `/avatar`, `/translate`, `/diller`, `/ping`, `/saat`", inline=False)
+    embed.add_field(name="⚙️ Sunucu Ayarları (Yönetici)", value="`/settings welcome`, `/settings goodbye`", inline=False)
+    embed.set_footer(text="Quant Bot | Kapsamlı ve Gelişmiş")
+    await interaction.followup.send(embed=embed)
 
-    embed.add_field(name="🎵 Müzik", value=
-        "`!play <şarkı_adı/URL>` - Şarkı çalar veya kuyruğa ekler.\n"
-        "`!spotify_login` - Spotify hesabını bota bağlar.\n"
-        "`!spotify_auth <kod>` - Spotify'dan aldığın kodu bota verir.\n"
-        "`!playlist <Spotify_Playlist_Adı>` - Spotify çalma listeni oynatır (önce login olmalısın).\n"
-        "`!stop` - Müziği durdurur ve bottan çıkar.\n"
-        "`!skip` - Sıradaki şarkıya geçer.", inline=False)
-
-    embed.add_field(name="🛠️ Moderasyon (Sadece 'Moderator' Rolü)", value=
-        "`!duyuru` - Adım adım duyuru oluşturur.\n"
-        "`!sil <sayı>` - Belirtilen sayıda mesajı siler (1-100).\n"
-        "`!mutetx <@üye> <süre ör:10m, 1h, 1d>` - Üyeyi metin kanallarında susturur.\n"
-        "`!mutevc <@üye> <süre>` - Üyeyi ses kanallarında susturur.\n"
-        "`!unmutetx <@üye>` - Metin susturmasını kaldırır.\n"
-        "`!unmutevc <@üye>` - Ses susturmasını kaldırır.", inline=False)
-    
-    embed.set_footer(text="Quant Bot | İyi eğlenceler!")
-    embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
-    await ctx.send(embed=embed)
-
-
-# --- Bot Startup ---
-@bot.event
-async def on_ready():
-    print(f'{bot.user} olarak giriş yapıldı!')
-    print(f"Discord.py API Sürümü: {discord.__version__}")
-    print(f"Bot ID: {bot.user.id}")
-    print(f"Sunucu Sayısı: {len(bot.guilds)}")
-    await bot.change_presence(activity=discord.Game(name="!yardim | Quant Bot"))
-    
-    bot.vc_idle_timer = asyncio.get_event_loop().time() # Initialize timer
-    if not check_vc_idle.is_running():
-        check_vc_idle.start()
 
 if __name__ == "__main__":
-    if not DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN == "YOUR_DISCORD_BOT_TOKEN_HERE": # Basic check
-        print("HATA: Discord bot token'ı bulunamadı veya ayarlanmamış!")
-        print("Lütfen DISCORD_BOT_TOKEN değişkenini ayarla.")
+    if not DISCORD_BOT_TOKEN:
+        print("\nHATA: Discord bot token'ı bulunamadı!")
+        print("Lütfen kodun en üstündeki DISCORD_BOT_TOKEN değişkenini düzenleyin veya bir ortam değişkeni olarak ayarlayın.\n")
     else:
         try:
             bot.run(DISCORD_BOT_TOKEN)
-        except discord.PrivilegedIntentsRequired:
-            print("HATA: Bot için Privileged Gateway Intent'leri (Message Content, Server Members) etkinleştirilmemiş.")
-            print("Lütfen Discord Developer Portal'dan botunuzun ayarlarından bu intent'leri açın.")
+        except discord.errors.PrivilegedIntentsRequired:
+            print("\nHATA: Gerekli Privileged Gateway Intent'leri etkinleştirilmemiş.")
+            print("Lütfen https://discord.com/developers/applications adresinden botunuzun ayarlarından 'MESSAGE CONTENT INTENT' ve 'SERVER MEMBERS INTENT' seçeneklerini açın.\n")
         except Exception as e:
             print(f"Bot çalıştırılırken bir hata oluştu: {e}")
