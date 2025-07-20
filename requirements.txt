@@ -1,8 +1,9 @@
 discord.py
-discord-ext-commands
-requests
 google-generativeai
-yt-dlp
+requests
 beautifulsoup4
+yt-dlp
 spotipy
 pyfiglet
+googletrans==4.0.0-rc1
+PyNaCl
