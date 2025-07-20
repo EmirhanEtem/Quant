@@ -2,7 +2,7 @@
 
 Quant Bot, Discord sunucuları için geliştirilmiş, çok yönlü ve modüler bir bottur. Moderasyon, müzik (YouTube & Spotify), yapay zeka entegrasyonları (metin ve resim üretimi), seviye/ekonomi sistemi ve çeşitli eğlence komutları ile sunucunuzu daha interaktif ve yönetilebilir hale getirmeyi amaçlar.
 
-![Discord](https://img.shields.io/discord/123456789012345678?label=Discord&logo=discord&style=for-the-badge)
+![Discord](https://img.shields.io/discord/1279064789116653643?label=Discord&logo=discord&style=for-the-badge)
 
 ## ✨ Ana Özellikler
 
