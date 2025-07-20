@@ -1,53 +1,107 @@
+# Quant Bot
 
-# Quant Discord Bot
+Quant Bot is a feature-rich, modular bot developed for Discord servers. It aims to make your server more interactive and manageable with features like moderation, music (YouTube & Spotify), AI integrations (text and image generation), a leveling/economy system, and various fun commands.
 
-Quant is a versatile bot for your Discord servers. It offers music playback, moderation, AI-powered chat, Spotify integration, and much more. This bot is designed to provide a user-friendly experience.
+![Discord](https://img.shields.io/discord/123456789012345678?label=Discord&logo=discord&style=for-the-badge)
 
----
+## ✨ Key Features
 
-## 🚀 Features
+- **🛡️ Advanced Moderation:** Warn and mute members, purge messages, make announcements, and detailed logging.
+- **🎵 Comprehensive Music System:** Play songs/playlists from YouTube and Spotify, manage a queue, repeat songs, and more.
+- **✨ AI Integrations:**
+  - Smart chat with Google Gemini (`/quant`).
+  - Generate images from text prompts using Stable Diffusion (`/image`).
+- **🌟 Leveling & Economy System:**
+  - Gain XP and level up by sending messages.
+  - View your rank on the server leaderboard (`/leaderboard`).
+  - A virtual economy with daily rewards, money transfers, and betting games (`/daily`, `/pay`, `/battle`).
+- **🎉 Fun & Games:**
+  - Interactive games like Blackjack (`/blackjack`) and betting-based Battles (`/battle`).
+  - Classic fun commands like polls, dice rolls, coin flips, and a "find the difference" game.
+- **🛠️ Utility Commands:** User/server info, avatar display, translation, Steam price lookup, and more.
+- **⚙️ Server-Specific Settings:** Ability to set custom channels for welcome/goodbye messages.
 
-### 🎵 Music
-- **`!play <song_name/URL>`**: Plays or adds a song to the queue.
-- **`!playlist <Spotify_Playlist_Name>`**: Plays Spotify playlists (you need to link your Spotify account).
-- **`!stop`**: Stops the music and disconnects the bot from the voice channel.
-- **`!skip`**: Skips to the next song.
+## 🚀 Installation and Setup
 
-### 🌐 General
-- **`!ping`**: Shows the bot's latency.
-- **`!time`**: Shows the current time.
-- **`!weather <city>`**: Searches for the weather in the specified city.
-- **`!gsr <search>`**: Performs a Google search.
-- **`!ytsr <search>`**: Performs a YouTube search.
+Follow these steps to run this bot on your own server.
 
-### ✨ AI and Entertainment
-- **`!quant <question>`**: Chat with AI.
-- **`!image <prompt>`**: Generates an image based on your prompt.
-- **`!steam <game_name>`**: Shows the Steam price of the game.
-- - **`!translate <sentence> <language>`**: Translates your sentence , **`!languages`**: Orders all supported languages.
+### 1. Prerequisites
+- Python 3.8 or higher
+- A Discord Bot Account
+- Necessary API Keys (Google, HuggingFace, Spotify)
 
-### 🛠️ Moderation (Only 'Moderator' Role)
-- **`!announcement`**: Creates an announcement step by step.
-- **`!clear <number>`**: Deletes the specified number of messages (1-100).
-- **`!mutetx <@user> <duration>`**: Mutes the user in text channels.
-- **`!mutevc <@user> <duration>`**: Mutes the user in voice channels.
-- **`!unmutetx <@user>`**: Unmutes the user in text channels.
-- **`!unmutevc <@user>`**: Unmutes the user in voice channels.
+### 2. Installation
+1.  **Clone the Repository:**
+    ```bash
+    git clone https://github.com/user/quant-bot.git
+    cd quant-bot
+    ```
 
----
+2.  **Install Dependencies:**
+    If the project does not include a `requirements.txt` file, install the libraries manually with the following commands:
+    ```bash
+    pip install discord.py google-generativeai requests beautifulsoup4 yt-dlp spotipy pyfiglet googletrans==4.0.0-rc1
+    pip install pynacl
+    ```
 
-## 📦 Installation
+3.  **Configuration (API Keys & Tokens):**
+    Fill in the variables at the top of the code file with your own information, or set them up as environment variables in a `.env` file.
+    - `DISCORD_BOT_TOKEN`: Your bot token from the Discord Developer Portal.
+    - `GENAI_API_KEY`: Your Gemini API key from Google AI Studio.
+    - `HF_TOKEN`: Your API token with `read` permissions from HuggingFace.
+    - `SPOTIPY_CLIENT_ID`: Your Client ID from the Spotify Developer Dashboard.
+    - `SPOTIPY_CLIENT_SECRET`: Your Client Secret from the Spotify Developer Dashboard.
+    - `SPOTIPY_REDIRECT_URI`: The redirect URI you specified in your Spotify app (e.g., `http://localhost:8888/callback`).
+    - `LOG_CHANNEL_ID`: The ID of the Discord text channel where moderation logs will be sent.
 
-### 1. Install Required Dependencies
-```bash
-pip install -r requirements.txt
-```
-### Set Up Environmental Variables
-1. Fill in the parts of the code that start with 'your' with your own information (if you don't have a Spotify ID, you will need to create a Spotify bot).
-2. Download the FFmpeg module and add the path to the downloaded FFmpeg file in your system's Environment Variables under the Path section.
+4.  **Discord Developer Portal Settings:**
+    - Navigate to the **Privileged Gateway Intents** section in your bot's settings.
+    - Enable both **SERVER MEMBERS INTENT** and **MESSAGE CONTENT INTENT**. These are required for the bot to access member information and message content.
 
-### Run the Bot
-```bash
-python Quant_git.py
-```
-Run your bot and enjoy!
+5.  **Run the Bot:**
+    ```bash
+    python bot.py
+    ```
+
+## 📝 Command List
+
+The bot operates using slash commands (`/`). Here is a list of the main commands:
+
+| Category        | Command             | Description                                                   |
+|-----------------|---------------------|---------------------------------------------------------------|
+| **Moderation**  | `/warn`             | Warns a member with a specified reason.                       |
+|                 | `/warnings`         | Lists a member's warnings.                                    |
+|                 | `/mute`             | Mutes a member for a specified duration.                      |
+|                 | `/unmute`           | Unmutes a member.                                             |
+|                 | `/sil` (`purge`)    | Deletes a specified number of messages (1-100).               |
+|                 | `/duyuru` (`announce`)| Sends an embedded announcement to a specified channel.      |
+| **Level**       | `/rank`             | Shows your level and XP information.                          |
+|                 | `/leaderboard`      | Displays the server's level leaderboard.                      |
+|                 | `/daily`            | Claims your daily Quant reward.                               |
+|                 | `/balance`          | Shows your Quant balance.                                     |
+|                 | `/pay`              | Sends Quant to another member.                                |
+| **Music**       | `/play`             | Plays or queues a song (YouTube/Spotify).                     |
+|                 | `/stop`             | Stops the music and disconnects from the voice channel.       |
+|                 | `/skip`             | Skips the currently playing song.                             |
+|                 | `/skipall`          | Skips all repeats of the current song.                        |
+|                 | `/playlist`         | Plays a playlist from your linked Spotify account.            |
+|                 | `/spotify_login`    | Sends an authorization link to connect your Spotify account.  |
+|                 | `/spotify_auth`     | Submits the authorization code from Spotify to the bot.       |
+| **AI**          | `/quant`            | Chats with the AI.                                            |
+|                 | `/resim` (`image`)  | Generates an image from a text prompt.                        |
+| **Search/Info** | `/steam`            | Shows the Steam price of a game.                              |
+|                 | `/gsr`, `/ytsr`     | Searches on Google and YouTube.                               |
+|                 | `/havadurumu` (`weather`) | Searches for the weather in a city.                     |
+| **Fun/Games**   | `/8ball`            | Asks a question to the magic 8-ball.                          |
+|                 | `/roll`, `/flip`    | Rolls a die or flips a coin.                                  |
+|                 | `/poll`             | Creates a simple poll.                                        |
+|                 | `/game`, `/guess`   | Starts and makes a guess in the "find the difference" game.   |
+|                 | `/battle`           | Engages in a betting-based battle against another member.     |
+|                 | `/blackjack`        | Plays a game of betting-based Blackjack (21).                 |
+| **Utility**     | `/userinfo`         | Displays detailed information about a member.                 |
+|                 | `/serverinfo`       | Displays detailed information about the server.               |
+|                 | `/avatar`           | Shows a member's avatar.                                      |
+|                 | `/translate`        | Translates text to a specified language.                      |
+|                 | `/ping`, `/saat` (`time`) | Shows the bot's latency and the current time.           |
+| **Settings**    | `/settings welcome` | Sets the welcome message channel.                             |
+|                 | `/settings goodbye` | Sets the goodbye message channel.                             |
