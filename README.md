@@ -60,7 +60,7 @@ Follow these steps to run this bot on your own server.
 
 5.  **Run the Bot:**
     ```bash
-    python bot.py
+    python Quant_git.py
     ```
 
 ## 📝 Command List
