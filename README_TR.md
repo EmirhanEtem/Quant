@@ -60,7 +60,7 @@ Bu botu kendi sunucunuzda çalıştırmak için aşağıdaki adımları izleyin.
 
 5.  **Botu Çalıştırın:**
     ```bash
-    python bot.py
+    python Quant_git.py
     ```
 
 ## 📝 Komut Listesi
