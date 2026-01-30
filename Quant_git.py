@@ -21,14 +21,14 @@ import inspect
 import re
 import aiohttp 
 
-SPOTIPY_CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID", "SPOTIPY_CLIENT_ID_HERE")
-SPOTIPY_CLIENT_SECRET = os.getenv("SPOTIPY_CLIENT_SECRET", "SPOTIPY_CLIENT_SECRET_HERE")
-SPOTIPY_REDIRECT_URI = os.getenv("SPOTIPY_REDIRECT_URI", "http://localhost:8888/callback") 
-HF_TOKEN = os.getenv('HF_TOKEN', 'hf_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX')
-GENAI_API_KEY = os.getenv('GENAI_API_KEY', 'GENAI_API_KEY_HERE')
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "YOUR_DISCORD_BOT_TOKEN_HERE")
-LOG_CHANNEL_ID = "YOUR_LOG_CHANNEL_ID_HERE"  
-AI_ONLY_CHANNEL_ID = "YOUR_AI_ONLY_CHAT_CHANNEL_ID_HERE"
+SPOTIPY_CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID", "")
+SPOTIPY_CLIENT_SECRET = os.getenv("SPOTIPY_CLIENT_SECRET", "")
+SPOTIPY_REDIRECT_URI = os.getenv("SPOTIPY_REDIRECT_URI", "http://localhost:8888/callback")
+HF_TOKEN = os.getenv('HF_TOKEN', '')
+GENAI_API_KEY = os.getenv('GENAI_API_KEY', '') 
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", " ")
+LOG_CHANNEL_ID = 123123123123  # Log kanalı ID'si buraya
+AI_ONLY_CHANNEL_ID = 123123123123 # Sadece AI komutlarının çalışabileceği kanal ID'si buraya
 TOKEN_STORAGE_FILE = "user_spotify_tokens.json"
 LEVELS_FILE = "levels.json"
 ECONOMY_FILE = "economy.json"
@@ -875,13 +875,16 @@ async def playlist_command(interaction: discord.Interaction, playlist_name: str)
     except Exception as e:
         await interaction.followup.send(f"Playlist işlenirken bir hata oluştu: {e}")
 
+from google.api_core import exceptions as google_exceptions
 
 MAX_HISTORY_TURNS = 10 
 
 @bot.tree.command(name='quant', description="Yapay zeka ile sohbet edin (sohbet geçmişini hatırlar).")
 @app_commands.describe(question="Sormak istediğiniz soru")
+@app_commands.checks.cooldown(1, 10.0, key=lambda i: i.user.id)
 async def quant_command(interaction: discord.Interaction, question: str):
     await interaction.response.defer()
+    
     if not GENAI_API_KEY:
         return await interaction.followup.send("Google AI API anahtarı ayarlanmamış.", ephemeral=True)
 
@@ -893,7 +896,7 @@ async def quant_command(interaction: discord.Interaction, question: str):
 
     try:
         model = genai_google.GenerativeModel(
-            'gemini-2.0-flash',
+            'models/gemini-2.5-flash', 
             system_instruction="You are Quant, a helpful and friendly Discord bot. Your answers should be informative and concise."
         )
         
@@ -922,9 +925,12 @@ async def quant_command(interaction: discord.Interaction, question: str):
         else:
             await interaction.followup.send(text)
 
+    except google_exceptions.ResourceExhausted:
+        await interaction.followup.send("⚠️ **Quant şu an çok yorgun!** (Google API kotası doldu). Lütfen yaklaşık 1 dakika bekleyip tekrar deneyin.")
+    
     except Exception as e:
         print(f"Google AI Hatası: {e}")
-        await interaction.followup.send(f"Yapay zeka ile iletişim kurulurken bir hata oluştu. Lütfen daha sonra tekrar deneyin.\nHata Detayı: `{e}`")
+        await interaction.followup.send(f"Yapay zeka ile iletişim kurulurken bir hata oluştu. Lütfen daha sonra tekrar deneyin.\nHata: `{str(e)[:100]}`...")
 from huggingface_hub import InferenceClient
 @bot.tree.command(name='resim', description="Quant ile profesyonel resim oluşturun.")
 @app_commands.describe(prompt="Resim açıklaması (İngilizce)")
@@ -935,19 +941,16 @@ async def resim(interaction: discord.Interaction, prompt: str):
         return await interaction.followup.send("HF_TOKEN ayarlanmamış.", ephemeral=True)
 
     try:
-        # Dokümana uygun istemci oluşturma
         client = InferenceClient(token=HF_TOKEN)
         
-        # Blocking işlemi (bekleten işlem) olduğu için executor içinde çalıştırıyoruz
         image = await bot.loop.run_in_executor(
             None,
             lambda: client.text_to_image(
                 prompt,
-                model="black-forest-labs/FLUX.1-dev" # Dokümandaki resmi model ID'si
+                model="black-forest-labs/FLUX.1-dev" 
             )
         )
 
-        # Resim RAM'de oluşur, Discord'a göndermek için BytesIO'ya çeviriyoruz
         with BytesIO() as image_binary:
             image.save(image_binary, 'PNG')
             image_binary.seek(0)
@@ -957,7 +960,6 @@ async def resim(interaction: discord.Interaction, prompt: str):
             )
             
     except Exception as e:
-        # Hata mesajını temizleyip gönderelim
         await interaction.followup.send(f"⚠️ Hata oluştu: {str(e)}")
 @bot.tree.command(name='steam', description="Bir oyunun Steam fiyatını gösterir.")
 @app_commands.describe(game_query="Aranacak oyunun adı")
@@ -1021,37 +1023,28 @@ async def translate_command(interaction: discord.Interaction, text: str, target_
     await interaction.response.defer()
     
     try:
-        # Desteklenen dilleri çekiyoruz {'turkish': 'tr', 'english': 'en' ...}
         langs_dict = GoogleTranslator().get_supported_languages(as_dict=True)
         
         target_input = target_language.lower().strip()
         lang_code = None
         lang_name = None
 
-        # Kullanıcı 'tr' gibi kod mu girdi?
         if target_input in langs_dict.values():
             lang_code = target_input
-            # Koda karşılık gelen ismi bul (görsellik için)
             lang_name = [k for k, v in langs_dict.items() if v == lang_code][0]
             
-        # Kullanıcı 'turkish' gibi isim mi girdi?
         elif target_input in langs_dict:
             lang_code = langs_dict[target_input]
             lang_name = target_input
             
-        # Bulunamadıysa hata ver
         if not lang_code:
             return await interaction.followup.send(f"❌ Geçersiz hedef dil: '{target_language}'. Örnek: 'tr' veya 'turkish'.")
 
-        # Çeviri İşlemi (Blocking olduğu için executor içinde)
-        # source='auto' diyerek dili otomatik algılatıyoruz
         translator = GoogleTranslator(source='auto', target=lang_code)
         result_text = await bot.loop.run_in_executor(None, translator.translate, text)
 
-        # Embed Oluşturma
         embed = discord.Embed(title="Çeviri Sonucu", color=discord.Color.green())
         
-        # deep-translator direkt metin döndürür, kaynak dil ismini ayrıca sormuyoruz (hız için)
         embed.add_field(name="📄 Orijinal Metin", value=f"```{text}```", inline=False)
         embed.add_field(name=f"🌍 Çevrilen Metin ({lang_name.title()})", value=f"```{result_text}```", inline=False)
         
